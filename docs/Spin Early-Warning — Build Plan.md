@@ -222,7 +222,7 @@ Location: `/Users/mihaistefanita/Claude Projects/Drift Spin Project/spin-early-w
 - **`pyproject.toml`** in DriftScore's style:
   - Package `spinwarn` under `src/`, `requires-python = ">=3.14"`: driftscore needs it.
   - Dependencies: pandas, numpy, scikit-learn, matplotlib, pyarrow, and `driftscore @ git+https://github.com/MihaiMike2005/DriftScoreUI.git`. Dev extras: pytest, jupyter.
-  - **Locally,** run `pip install -e "../AssetoCorsa Drift Score"` first so DriftScore edits show up.
+  - **Locally,** run `pip install -e "../AssetoCorsa Drift Score"` after `pip install -e '.[dev]'`, so DriftScore edits show up. Not before: `pip install -e '.[dev]'` replaces a local driftscore with the GitHub one, so rerun the local install after it.
   - **In CI,** the git install only works while DriftScoreUI is public. It has to be public for the CV link anyway.
 - **CI:** copy DriftScore's workflow, Python `["3.14"]`.
 - **`.gitignore`:** DriftScore's entries plus `data/raw/`, `data/processed/`, `results/cv/`.
