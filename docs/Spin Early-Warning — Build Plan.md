@@ -1,0 +1,479 @@
+# Spin Early-Warning — Build Plan
+
+Oct 10, 2026 · @Mihai · companion to *Spin Early-Warning Model — Project Plan*
+
+The Project Plan says what to build and why. This file says what code to write, in what order, so Claude Code can build it one step at a time. Where the two differ on implementation details, this file wins.
+
+## How to use this with Claude Code
+
+- **One step per prompt.** Open Claude Code in the repo the step names and send:
+
+  > Read `Spin Early-Warning Model — Project Plan.md` and `Spin Early-Warning — Build Plan.md`. Implement Step N only. Stop when its "Done when" passes and show me the test output.
+
+- **After each step:** read the diff, run `pytest`, commit. In DriftScore, work on a branch and open one PR per phase so CI runs.
+- **Steps marked (you)** are driving or watching video. Claude Code can't do them.
+- At Step 5, copy both plan files into `spin-early-warning/docs/` so sessions in that repo can read them.
+
+## Ground rules (both repos)
+
+- **Pure functions apart from I/O.** I/O loops stay thin and untested, like `app.py`; everything else gets a test.
+- **One home for constants.** Thresholds, windows and horizons live in module constants (DriftScore) or `config.py` (spinwarn), never inline.
+- **Seconds, never frames,** in every parameter and constant.
+- **DriftScore stays stdlib-only, on Python 3.14.** Both machines run 3.14 (the AC PC 3.14.6), and so does CI. No new dependencies.
+- **spinwarn:** Python 3.14, since it installs driftscore. Dependencies are limited to pandas, numpy, scikit-learn, matplotlib, pyarrow, pytest, jupyter and driftscore.
+- **Fixed seeds:** `SEED = 0` everywhere.
+- **Test sessions** are loaded only through the final-run path (Step 14).
+- **Comments** follow the existing style: explain why, briefly.
+
+## Overview
+
+| Step | Repo | What | Plan day |
+| --- | --- | --- | --- |
+| 1 | DriftScore | Extend telemetry structs | Sun |
+| 2 | DriftScore | Session logger | Sun |
+| 3 | DriftScore | Log check | Sun |
+| 4 | (you) AC PC | Live check, first recordings | Sun |
+| 5 | spin-early-warning | Scaffold, config, CI | Sun/Mon |
+| 6 | spin-early-warning | Load sessions, 60 Hz grid, derived signals | Mon |
+| 7 | spin-early-warning | Labels | Mon |
+| 8 | spin-early-warning + (you) | Explore notebook, spot-check | Mon |
+| 9 | spin-early-warning | Features + causality test | Tue |
+| 10 | spin-early-warning | Dataset build, lock test sessions | Tue |
+| 11 | spin-early-warning | Alert scoring | Wed |
+| 12 | spin-early-warning | Baselines + CV harness | Wed |
+| 13 | spin-early-warning | Models + tuning | Wed/Thu |
+| 14 | spin-early-warning | Final test run | Thu |
+| 15 | spin-early-warning | Report + README | Fri |
+
+## Decisions that differ from the Project Plan
+
+- **The logger writes CSV, not Parquet.** DriftScore stays dependency-free, and a CSV flushed every second survives a crash. spinwarn caches to Parquet.
+- **The logger records all three axes** of angular velocity and accG. Which axis is yaw or lateral gets decided offline, so a wrong guess never costs a re-recording.
+- **`logcheck` (Step 3)** is new: it validates the struct on the AC PC right after a session.
+- **Raw packets are resampled to a uniform 60 Hz grid** (Step 6), whatever rate AC actually delivers. Thinning to 20 Hz for training then means every 3rd grid frame.
+- **The ML code is a package, `spinwarn`,** under `src/`, in the same layout as DriftScore, instead of loose modules.
+- **Python 3.14, not "3.11+".** Both machines run 3.14 (the AC PC 3.14.6), so DriftScore requires it and CI tests only it; spinwarn follows, since it installs driftscore. The Project Plan's reason for 3.11+ still holds: from 3.11, `time.sleep` on Windows uses a high-resolution timer, which the logger's 1 ms poll needs.
+
+## Phase A — DriftScore: telemetry and logger
+
+Branch `feature/session-logger`, one PR at the end of Step 3.
+
+### Step 1 — Extend the telemetry structs
+
+Files: `src/driftscore/telemetry.py`, `tests/test_telemetry.py`
+
+- **`ACPhysics`:** append the fields after `heading`, up to `localAngularVel`, in AC's documented order: `pitch`, `roll`, `cgHeight`, `carDamage[5]`, `numberOfTyresOut` (int), `pitLimiterOn` (int), `abs`, `kersCharge`, `kersInput`, `autoShifterOn` (int), `rideHeight[2]`, `turboBoost`, `ballast`, `airDensity`, `airTemp`, `roadTemp`, `localAngularVel[3]`. The rest are floats. Update the "we stop at heading" comment.
+- **`_layout_ = "ms"` on every struct.** Python 3.14 warns that `_pack_` without it is deprecated (an error from 3.19).
+- **`ACGraphicsPrefix`** on `acpmf_graphics`: `packetId`, `status`, `session` (all int). Add constants `AC_OFF, AC_REPLAY, AC_LIVE, AC_PAUSE = 0, 1, 2, 3`.
+- **`ACStaticPrefix`** on `acpmf_static`: `smVersion[15]`, `acVersion[15]`, `numberOfSessions` (int), `numCars` (int), `carModel[33]`, `track[33]`.
+  - Use `ctypes.c_uint16` arrays for the strings, not `c_wchar`. Windows `wchar_t` is 2 bytes, but `c_wchar` is 4 bytes on macOS and Linux, so `c_wchar` would make the layout, and the tests, depend on the OS.
+- **`wchars_to_str(arr) -> str`:** decode UTF-16-LE and stop at the first NUL.
+- **Generic page access:** `open_page(name, struct)` and `read_page(mm, struct)`. Keep `open_physics` and `read_physics` as thin wrappers so `app.py` keeps working unchanged.
+
+Tests (any OS):
+
+- **Offsets:** `heading` = 208 (unchanged; a regression guard), `localAngularVel` = 296, static `carModel` = 68, `track` = 134. These come from AC's documented layout; Step 4 confirms them on live data. If it doesn't, fix the struct and these numbers together.
+- **Round-trip:** `struct.pack_into` a known float at byte 300, then `ACPhysics.from_buffer_copy` reads it back as `localAngularVel[1]`.
+- **Decoding:** `wchars_to_str` on "ks_toyota_ae86", followed by a NUL and junk, returns "ks_toyota_ae86".
+
+**Done when:** tests pass locally on 3.14 with no deprecation warning; `python -m driftscore.app` is unchanged.
+
+### Step 2 — Session logger
+
+Files: `src/driftscore/logger.py`, `tests/test_logger.py`, README section
+
+```text
+python -m driftscore.logger --kind natural|deliberate [--setup "TC off, 2nd gear"] [--out data/raw] [--poll-ms 1]
+```
+
+**Columns** (constant `COLUMNS`, in order):
+- `t`, `packet_id`
+- `speed_kmh`, `vel_x`, `vel_y`, `vel_z`, `heading`
+- `ang_vel_x`, `ang_vel_y`, `ang_vel_z`
+- `acc_g_x`, `acc_g_y`, `acc_g_z`
+- `steer`, `gas`, `brake`, `gear`, `rpms`
+- `wheel_slip_fl`, `wheel_slip_fr`, `wheel_slip_rl`, `wheel_slip_rr`
+
+**Pure parts (tested):**
+- `physics_row(phys, t) -> list`: one row in `COLUMNS` order.
+- `should_write(packet_id, last_packet_id, status) -> bool`: true only for a new packet while status is `AC_LIVE`.
+- `session_paths(out_dir, started) -> (csv_path, json_path)`, named `YYYY-MM-DD_HHMMSS.csv` and `.json`.
+- `track_break(wrote, status, rows, left_live) -> (row_is_break, left_live)`: marks the first row after AC left live (pause, replay), so the summary can leave that interval out.
+- `session_summary(ts, packet_ids, breaks) -> dict`: rows, live duration, mean rows/s, packetId steps, longest gap, breaks, all with the break intervals left out. Step 3 adds `statuses` and the break times.
+- `status_name(status) -> str`: the `ACStatus` name, or the raw int if a live read is out of range.
+- `status_line(t, packet_id, rows, rate, status, speed_kmh, slip_deg) -> str`: the live console line, under 80 characters so a narrow window won't wrap it.
+- `parse_poll_ms(text) -> float`: the `--poll-ms` type, 0.1 to 1000, so a typo stops the logger before it creates any file.
+
+**Loop (untested, like `app.py`):**
+
+- **Start:** `t0 = time.perf_counter()`. Read the static page once and write the JSON: car, track, AC and shared-memory versions, date, start time, kind, setup, poll interval, Python version, platform.
+- **Each poll:** read graphics status and physics, write the row if `should_write`, and note with `track_break` whether it is the first row after a pause or replay. Flush once a second.
+- **Status line, about every 0.25 s:** elapsed `t`, packetId, rows written, rows/s over the last second, status name, speed, slip angle. With the console in the screen recording, this is what maps video time to telemetry time.
+- **Ctrl+C:** close the CSV and rewrite the JSON with a summary: rows, live duration, mean rows/s, counts of packetId steps (1, 2, 3+, reset), longest gap, breaks.
+- **Slip angle** is computed for the status line only, not written to the file.
+
+Tests:
+- `physics_row` on a hand-built `ACPhysics`: right column count and order, values carried through.
+- `should_write` for a duplicate id, paused, replay, and a new live packet.
+- `session_paths` naming.
+- `track_break` for a live row, a duplicate packet, pause/replay/off with and without earlier rows, and the first row after a resume.
+- `session_summary` leaving break intervals out of every number.
+- `status_name` for a known status and an out-of-range int.
+- `status_line` under 80 characters with the widest realistic values.
+- `parse_poll_ms` accepting 0.1–1000 and refusing 0, below 0.1, negatives, nan, inf, too large and non-numbers; `main` exiting on a bad value before it connects.
+
+README: add a "Recording a session" section with the routine. **Before:** car on track, start the recording, start the logger. **During:** drive 10–20 min. **After:** Ctrl+C, write the `notes.md` line, copy the files to the Mac.
+
+**Done when:** tests pass in CI.
+
+### Step 3 — Log check
+
+Files: `src/driftscore/logcheck.py`, `tests/test_logcheck.py`, plus a logger change (`logger.py`, `tests/test_logger.py`) and README
+
+```text
+python -m driftscore.logcheck data/raw/2026-10-11_143000.csv
+```
+
+Stdlib only, so it runs on the AC PC right after a session and catches a broken struct before you record more. It reads the CSV and, if there is one, the `.json` of the same name.
+
+The first real session (`2026-10-11_120846`) changed three checks from the first draft. The car slides most of the time, so speed × yaw rate and d(speed)/dt gave r 0.78 and 0.40 for the lateral and longitudinal axes. Front wheel slip spikes to ~5e7 at big angles, which swamps a mean.
+
+**Logger change:** the JSON summary keeps `breaks`, the count, and adds `break_intervals`. Each entry has `start_s` and `end_s`, the `t` of the rows either side, rounded like the CSV's `t` (one constant, `T_DECIMALS`) so logcheck matches them exactly. It also has `statuses`, the non-live AC statuses seen in between, by name, each once, in the order first seen: any of `PAUSE`, `REPLAY` and `OFF` (or the raw number, if a read is out of range), e.g. `["PAUSE"]` or `["PAUSE", "REPLAY"]`. `break_statuses(seen, status, left_live)` collects them; `session_summary(ts, packet_ids, breaks, statuses)` pairs them with the breaks strictly, so a mismatch raises instead of dropping a break.
+
+It prints:
+
+- **Rate:** rows/s, AC's packet rate (packetId change ÷ time, over intervals of 0.1 s or less), the histogram of packetId steps and the share of steps of 2+.
+- **Gaps and breaks:** every gap over 0.1 s and every break the JSON lists, however short, with its times and a label.
+  - A listed break is labelled with its statuses.
+  - Otherwise, a gap is a pause if packetId moved less than half of what the rate predicts (AC freezes packetId while paused), and a logging gap if not.
+  - Without the JSON, or with an older one that has no `break_intervals`, the packetId test decides alone.
+  - Where the JSON and the packetId test disagree, a note says so, both ways: a listed break where packetId kept counting, and an unlisted gap where it froze ("AC stalled"). Neither is a CHECK reason.
+- **Yaw axis:** correlation of each `ang_vel` axis with d(unwrapped `heading`)/dt. Prints the best axis, r and sign.
+- **Lateral and longitudinal axes:** correlation of each `acc_g` axis with d(velocity)/dt turned into the car frame by heading h, ÷ 9.81: nose = (−sin h, cos h), side = (cos h, sin h) in x/z.
+- **Steering range:** min and max of `steer`.
+- **Wheel order:** median wheel slip per wheel while `gas` > 0.8, |slip angle| > 20° and speed ≥ `SLIP_SPEED_FLOOR_KMH` (5 km/h; below it the slip angle is noise). The two rear wheels should be highest.
+- **Verdict:** `OK`, or `CHECK` with every reason.
+
+Derivatives are central differences over `DERIV_SPAN_S` = 0.05 s, not adjacent rows: row-to-row on the poll time drops yaw r from 0.999 to 0.98. They never cross a gap over 0.1 s or a listed break. Listed breaks are left out of every number, as the logger leaves them out of its summary. Logging gaps are left out too, since they get their own report, but the logger keeps them: with a logging gap, the JSON counts one more step per gap than logcheck, and its rows/s is a little lower.
+
+**CHECK when** (thresholds are module constants):
+- the best yaw |r| is below 0.95, or the best lateral or longitudinal |r| is below 0.9;
+- `steer` goes outside [−1.05, 1.05], or doesn't reach both −0.5 and +0.5;
+- either rear median isn't above both front medians, or there's under 1 s of qualifying driving to judge from;
+- there's any logging gap over 0.1 s;
+- more than 10% of packetId steps are 2 or more (the poll is too slow to keep every packet).
+
+**Damaged or missing files:** a last row cut off mid-write (the logger was stopped without Ctrl+C) is left out with a note, and isn't a CHECK reason. A JSON without a summary gets its own note, and so does a damaged one (empty, cut off or zero bytes, from a logger stopped while rewriting it): both fall back on the packetId test. A missing file, or anything but a `.csv` (the `.json`, or the bare stem tab completion stops at), stops with an argparse error.
+
+**Pure parts (tested):** `unwrap`, `derivative`, `pearson`, `best_axis -> (index, r, sign)`, `car_frame`, `accel_refs`, `step_stats`, `break_rows`, gap classification (`classify_gap`, `find_gaps`), `wheel_medians`, `verdict`, `read_columns`, `read_meta`; in the logger, `break_statuses`. `pearson` is written by hand because `statistics.correlation` raises on a constant input; this returns 0, so a dead axis can't crash the check. Opening the files and printing stay in an untested `report()`, like `app.py`.
+
+Tests on synthetic data:
+- A sine-wave heading with `ang_vel_y = −d(heading)/dt + noise` gives axis 1, sign −1.
+- Unwrapping across ±π leaves no spike in the derivative.
+- Rotation: straight-ahead acceleration at heading 0 and at π/2 gives lon = a, lat = 0; along the side gives lat = a, lon = 0.
+- The derivative never spans a gap or a listed break.
+- Without break times, a 2 s gap with a packetId step of 1 is a pause, and a 0.2 s gap with a step of about 0.2 × rate is a logging gap. With them, a listed REPLAY where packetId kept counting is labelled REPLAY with a note, an unlisted frozen gap gets the "AC stalled" note, and a 23 ms break is still listed and left out of the step counts. A logging gap's step is left out, though the logger counts it.
+- One huge front-wheel spike doesn't change the wheel order.
+- `verdict` is OK when every check passes, and each failure gives its own reason.
+- A cut last row is left out, wherever the cut falls. A damaged JSON reads as None. `main` refuses a missing file and anything but a `.csv`.
+- Logger: `break_statuses` for pause, replay, pause then replay, and off; break times equal the CSV's `t` exactly; unpaired breaks and statuses raise.
+
+README: logcheck in the Layout table, and as step 2 of the "After" routine: run it on the PC right after Ctrl+C, before copying the files. The JSON paragraph says each break is listed with its times and kind.
+
+**On `2026-10-11_120846`** (recorded with the old 5 ms poll): AC rate 333.3/s; one 2.07 s pause and no logging gaps; yaw `ang_vel_y` sign −, lateral `acc_g_x` sign +, longitudinal `acc_g_z` sign +, all |r| ≥ 0.998; steer −0.98 to 1.00; rear medians 5.77 and 5.75 against fronts 0.48 and 0.46. Verdict CHECK for one reason: 84% of packetId steps are 2+, from the old poll.
+
+**Done when:** tests pass; open the Phase A PR and get CI green.
+
+### Step 4 — Live check (you, on the AC PC)
+
+- Pull the branch, `pip install -e .` with Python 3.14.
+- Log 2 minutes of mixed driving (straights, both drift directions, one spin), then run `logcheck`.
+- Write down the rate, yaw axis and sign, lateral and longitudinal axes and signs, steering range and wheel order. They go into `config.py` in Step 5.
+- **No axis above |r| = 0.9:** the struct is off. Paste the `logcheck` output to Claude Code to fix Step 1. The fallback is yaw rate from heading, which Step 6 supports.
+- Merge the PR, then record sessions as the Project Plan says.
+
+**Done when:** `logcheck` says OK, Phase A is merged, and 3 sessions are recorded.
+
+**Results (2026-10-11):** done. `logcheck` said OK on all four recordings made with the 1 ms poll, PR #2 is merged, and 3 sessions are recorded.
+
+- **Axes,** the same on all four recordings, on both tracks: AC rate 333.3/s; yaw `ang_vel_y`, r −1.000; lateral `acc_g_x`, r +0.977 to +0.999; longitudinal `acc_g_z`, r +0.974 to +0.999; steer −1.000 to 1.000; rear wheel slip medians about 5.6, fronts about 0.4.
+- **For `config.py` in Step 5:** `YAW_AXIS, YAW_SIGN = 1, 1`, `LAT_G_AXIS, LAT_G_SIGN = 0, 1`, `LON_G_AXIS, LON_G_SIGN = 2, 1`.
+  - `YAW_SIGN` is +1, not the "sign −" that `logcheck` prints. `logcheck` correlates against +d(heading)/dt, so its − means `ang_vel_y` = −d(heading)/dt, which is already Step 6's fallback. +1 keeps both ways of getting yaw rate the same sign.
+- **Sessions:** the S14 (`hush_nissan_silvia_s14`) on `rmi_gpk_sepang` with TC off, the track for every session this week. They're in `/Users/mihaistefanita/Claude Projects/Drift Spin Project/driftsessions/`: CSV and JSON in `raw/`, screen recordings in `videos/`, and `notes.md`. Step 5 moves `raw/` into `data/raw/` and `notes.md` to the repo root, both only after `.gitignore` exists. The videos stay outside the repo.
+
+  | Session | Kind | Live min | Spins (driver's count) |
+  | --- | --- | --- | --- |
+  | `2026-10-11_194646` | natural | 14.5 | ~40 |
+  | `2026-10-11_200553` | deliberate; started as natural by mistake, JSON `kind` fixed by hand | 8.2 | 20+ |
+  | `2026-10-11_202102` | natural | 10.0 | 30+ |
+
+  That's about 2.7 spins a minute, well above the Project Plan's 0.5–1. Step 7's onset count gives the real number.
+- **Not in the dataset:** the Brooklyn Park test runs. `120846` was recorded on the old 5 ms poll, `191720` is the live check, and `191522` and `191538` have 0 rows (AC status OFF). `191720` and its video are a candidate for `data/sample/`.
+- **Video offset:** the logger's status line is readable in the screen recording. On `191720`, t = 0 fell at about 8.8 s into the video. Step 8 reads each session's offset the same way.
+- **Notes, harmless:** "AC stalled" can follow a pause. In `194646` at 552.6 s, AC's physics hitched for 0.11 s right after a 0.7 s pause. That gap is over `GAP_S`, so Step 6 cuts there. A ~20 ms `PAUSE` right at the start of a session is common (`191720`, `200553`, `202102`). It falls in a segment's first `WINDOW_S`, which Step 7 excludes anyway.
+
+## Phase B — spin-early-warning (Mac)
+
+### Step 5 — Scaffold
+
+Location: `/Users/mihaistefanita/Claude Projects/Drift Spin Project/spin-early-warning`, next to the DriftScore folder and `driftsessions/`.
+
+- `git init`, plus a GitHub repo `spin-early-warning`.
+- **`pyproject.toml`** in DriftScore's style:
+  - Package `spinwarn` under `src/`, `requires-python = ">=3.14"`: driftscore needs it.
+  - Dependencies: pandas, numpy, scikit-learn, matplotlib, pyarrow, and `driftscore @ git+https://github.com/MihaiMike2005/DriftScoreUI.git`. Dev extras: pytest, jupyter.
+  - **Locally,** run `pip install -e "../AssetoCorsa Drift Score"` first so DriftScore edits show up.
+  - **In CI,** the git install only works while DriftScoreUI is public. It has to be public for the CV link anyway.
+- **CI:** copy DriftScore's workflow, Python `["3.14"]`.
+- **`.gitignore`:** DriftScore's entries plus `data/raw/`, `data/processed/`, `results/cv/`.
+
+```text
+spin-early-warning/
+├── docs/                 both plan files
+├── data/
+│   ├── raw/              gitignored: logger CSV + JSON
+│   ├── processed/        gitignored: cached tables
+│   ├── sample/           one short session, committed
+│   └── splits.json       committed: the locked test sessions
+├── notebooks/01_explore.ipynb
+├── results/              metrics.json, tables, figures (results/cv/ gitignored)
+├── src/spinwarn/
+│   ├── config.py         every constant
+│   ├── data.py           load, 60 Hz grid, derived signals, splits
+│   ├── labeling.py
+│   ├── features.py
+│   ├── evaluate.py       alerts and scoring
+│   ├── baselines.py
+│   ├── models.py
+│   ├── cv.py
+│   ├── run.py            CLI: build, lock-test, cv, tune, final
+│   ├── spotcheck.py
+│   └── report.py
+├── tests/
+├── notes.md
+├── experiments.md
+└── README.md
+```
+
+`config.py`:
+
+```python
+GRID_HZ = 60              # raw packets are resampled onto this uniform grid
+GAP_S = 0.1               # a longer gap starts a new segment
+MIN_SPEED_KMH = 20
+SPIN_DEG, REARM_DEG, REARM_S = 90, 45, 2.0
+SPIN_HOLD_S = 0.0         # raise to 0.25 if the spot-check flags intended high angles
+HORIZON_S = 0.5           # 1.0 for the secondary run
+WINDOW_S = 1.0
+RATE_WINDOW_S = 0.1       # for d|slip|/dt
+TTS_CAP_S = 5.0           # time to 90° when |slip| isn't growing
+MERGE_GAP_S = 0.2
+CREDIT_EARLY_S, CREDIT_LATE_S, FA_AFTER_S = 1.0, 0.1, 1.0
+TRAIN_HZ = 20
+FA_TARGETS = (1.0, 0.5)
+N_FOLDS = 4
+SEED = 0
+REVERSE_GEAR = 0          # AC gear: 0 = R, 1 = N, 2 = 1st
+
+# From Step 4's logcheck:
+YAW_AXIS, YAW_SIGN = None, 1        # YAW_AXIS None -> yaw rate from heading
+LAT_G_AXIS, LAT_G_SIGN = None, 1
+LON_G_AXIS, LON_G_SIGN = None, 1
+# From Step 8's notebook (held drifts should read positive):
+COUNTERSTEER_SIGN = 1
+```
+
+**Done when:** `pip install -e '.[dev]'` works, a smoke test that imports every module passes, and CI is green.
+
+### Step 6 — Load and prepare sessions (`data.py`)
+
+- **`load_raw(csv_path) -> (DataFrame, meta)`.**
+- **`to_grid(df, hz)`:** a uniform grid where each point takes the last packet at or before it. That's a backward as-of join: causal, and the same thing a live 60 Hz loop would see. No grid points inside gaps longer than `GAP_S`; the `segment` id increments at each gap.
+- **`add_signals(df)`:**
+  - `slip_deg` via `driftscore.signals.slip_angle_deg` row by row, plus `abs_slip`.
+  - `abs_slip_rate`: causal change of `abs_slip` over `RATE_WINDOW_S`.
+  - `yaw_rate` (deg/s): the configured axis × sign, or −d(unwrapped heading)/dt when `YAW_AXIS` is None. Also `yaw_acc`.
+  - `lat_g` and `lon_g`.
+  - `rear_slip`: mean of the RL and RR wheel slip.
+  - `countersteer` = steer × sign(slip) × `COUNTERSTEER_SIGN`, and `lock` = |steer|.
+  - `time_to_90` = (90 − `abs_slip`) ÷ `abs_slip_rate` when the rate is positive, otherwise `TTS_CAP_S`; clipped to [0, `TTS_CAP_S`].
+- **`load_session(session_id)`:** the three steps above, cached to `data/processed/<id>.parquet`. `--rebuild` deletes the cache after a config change.
+- **Session lists:** `list_sessions()` and `dev_sessions()` from `splits.json`. `load_test_sessions(confirm=False)` raises unless `confirm=True`.
+
+Tests:
+- **`to_grid`:** uneven timestamps give an even grid; a 0.3 s gap gives two segments with no points inside the gap.
+- **`time_to_90`:** a non-positive rate gives the cap; 60° at 120°/s gives 0.25 s.
+- **Slip angle:** a straight-line trace reads 0 (proves the driftscore wiring).
+
+**Done when:** tests pass, and Sunday's sessions load and plot.
+
+### Step 7 — Labels (`labeling.py`)
+
+- **`find_onsets(df) -> (onset_times, spinning_mask)`:** a per-segment state machine.
+  - **Spin:** while armed, a spin starts at the first frame with speed ≥ `MIN_SPEED_KMH` and `abs_slip` > `SPIN_DEG`, held for `SPIN_HOLD_S`. Onset is that first frame. The car is then disarmed.
+  - **Re-arm:** while disarmed, it re-arms after `REARM_S` of continuous speed ≥ `MIN_SPEED_KMH` with `abs_slip` < `REARM_DEG`.
+  - **`spinning`** covers onset up to re-arm.
+- **`label(df, horizon) -> df` with `target` and `excluded`:**
+  - **target:** a spin onset falls in (t, t + horizon].
+  - **excluded:** any of these:
+    - speed below `MIN_SPEED_KMH`;
+    - in reverse (`gear == REVERSE_GEAR`);
+    - spinning;
+    - the first `WINDOW_S` of a segment (incomplete window);
+    - the last `horizon` of a segment (its future is unknown).
+
+Tests:
+- **The Project Plan's cases:**
+  - A crossing at 5.0 s gives one onset, with positives exactly in [4.5, 5.0).
+  - A second crossing before re-arm is not a new spin.
+  - A spin, a stop and a drive-off re-arm only after 2 s of moving under 45°.
+- **Hold:** with `SPIN_HOLD_S = 0.25`, a 0.1 s spike over 90° is not a spin.
+- **Segment edges:** the first and last frames of a segment come out excluded.
+
+**Done when:** tests pass; the onset count per session is printed.
+
+### Step 8 — Explore and spot-check
+
+`notebooks/01_explore.ipynb`, per session:
+- the real raw rate and the gaps;
+- slip angle over time with onsets marked;
+- zooms on 3 onsets showing slip, yaw rate, steer and gas;
+- a histogram of |slip|, to see where your intended drifts sit relative to 90°;
+- the countersteer sign check, which sets `COUNTERSTEER_SIGN`.
+
+`spotcheck.py`:
+
+```text
+python -m spinwarn.spotcheck <session> --n 20 --video-offset 3.2
+```
+
+- **Output:** 20 seeded-random onsets as video timestamps (mm:ss.s), each with its peak |slip| and speed.
+- **Video offset:** the video time at which the logger's status line shows `t = 0`. Read it off the recording.
+
+(You) Watch each onset and mark it hit or miss in `notes.md`. Under 18/20, set `SPIN_HOLD_S = 0.25` and rerun. Also watch 5 minutes and count missed spins.
+
+**Done when:** the label rule is validated and the spin count is known.
+
+### Step 9 — Features (`features.py`)
+
+- **`make_features(df) -> DataFrame`:** the Project Plan's feature table plus `time_to_90` and `countersteer`. Computed per segment (`groupby('segment')`):
+  - **Windows:** `rolling('1s')` on the time index, never centred.
+  - **Slopes:** (x_t − x_{t−1 s}) ÷ 1 s via `shift(GRID_HZ)` inside the segment. That is exact on the uniform grid.
+- **`FEATURES`:** the list of feature column names, used everywhere else.
+
+Tests:
+- **Causality:** build a synthetic session and compute features. Replace every value after t* with noise, recompute, and features at t ≤ t* must be identical.
+- **Segment isolation:** features in the first frames of segment 2 don't change when segment 1's values do.
+
+**Done when:** tests pass.
+
+### Step 10 — Dataset build and test lock
+
+- **`python -m spinwarn.run build`:** loads every session, labels it and computes features into `data/processed/dataset.parquet`. One row per grid frame: session, segment, t, target, excluded, features, and the raw signals the baselines need. Prints minutes, spins and positive frames per session.
+- **`python -m spinwarn.run lock-test --sessions A,B`:** writes `splits.json` and refuses if it already exists.
+  - (You) pick 2 main-car sessions with typical spin counts before any modelling, then commit `splits.json`.
+
+**Done when:** the dataset builds and `splits.json` is committed.
+
+### Step 11 — Alert scoring (`evaluate.py`)
+
+- **`find_alerts(t, score, threshold, segment) -> [(start, end)]`:**
+  - Excluded frames get score −∞ first, so alerts only exist on scored frames.
+  - Runs closer than `MERGE_GAP_S` merge.
+  - Alerts never cross segments.
+- **`match(alerts, onsets)`:** applies the Project Plan rules.
+  - **Caught:** an alert is active anywhere in [onset − 1.0, onset − 0.1]. Lead time = onset − alert start, capped at 1.0 s.
+  - **False alarm:** no onset in (start, end + 1.0].
+  - **Too late:** an alert starting under 0.1 s before onset is neither caught nor false.
+- **`summarize(...) -> dict`:** n_spins, caught, recall, false_alarms, minutes, fa_per_min, alert_precision, time_in_alarm, median_lead. Pools sessions by summing counts and minutes.
+- **`threshold_for_fa(df, score, target)`:** scans candidate thresholds (score quantiles) and returns the lowest one with fa_per_min ≤ target.
+- **`recall_fa_curve(df, score)`.**
+- **`bootstrap_recall(caught, n=1000, seed=SEED) -> (lo, hi)`.**
+- **`pr_auc(df, score)`:** `average_precision_score` on scored frames.
+
+Tests:
+- An alert starting 1.3 s before onset and lasting through it: 1 catch, lead 1.0 s, 0 false alarms.
+- An alert starting 0.05 s before onset: too late, not false.
+- An alert with no onset: false.
+- Alerts 0.15 s apart merge; alerts 0.3 s apart don't.
+- Time in alarm on a hand-made case.
+- `threshold_for_fa` on a toy score.
+- `bootstrap_recall` is identical across two runs with the same seed.
+
+**Done when:** tests pass.
+
+### Step 12 — Baselines and CV harness
+
+**`baselines.py`:**
+- B1: score = `abs_slip`.
+- B2: for each θ1 in 30–80° (step 5), score = `abs_slip_rate` where `abs_slip` > θ1, else −∞. Keep the θ1 with the best CV recall at 1 FA/min.
+- B3: score = −`time_to_90`.
+
+**`cv.py`, `oof_scores(dataset, method, params)`:**
+- GroupKFold(`N_FOLDS`) over dev sessions, grouped by session.
+- Fit on non-excluded frames thinned to `TRAIN_HZ`; predict every frame of the held-out fold.
+- Returns scores aligned to the dataset. Baselines go through the same function with no fitting, so every method is treated the same way.
+
+**`run.py cv`:**
+
+```text
+python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--horizon 0.5] [--note "..."]
+```
+
+- Prints PR-AUC, plus recall, alert precision, time in alarm and median lead at 1 and 0.5 FA/min.
+- Saves out-of-fold scores to `results/cv/<run_id>.parquet`.
+- Appends a row to `experiments.md`: date, method, features, params, PR-AUC, recall @ 1 FA/min, note.
+
+**Done when:** B1, B2 and B3 rows exist in `experiments.md`.
+
+### Step 13 — Models and tuning
+
+- **`models.py`, `make_model(name, params)`:**
+  - **lr:** `Pipeline(StandardScaler, LogisticRegression(class_weight='balanced', max_iter=1000))`.
+  - **rf:** `RandomForestClassifier(class_weight='balanced_subsample', n_jobs=-1, random_state=SEED)`.
+  - **hgb:** `HistGradientBoostingClassifier(class_weight='balanced', random_state=SEED)`.
+- **`python -m spinwarn.run tune --method hgb --n 15`:** a seeded random search. Each config is one `cv` run; the best config by PR-AUC goes into `results/chosen.json`.
+  - **hgb:** `learning_rate` {0.03, 0.1}, `max_leaf_nodes` {15, 31, 63}, `min_samples_leaf` {20, 50, 200}, `l2_regularization` {0, 1}.
+  - **rf:** `n_estimators` {200, 400}, `max_depth` {None, 10, 20}, `min_samples_leaf` {1, 5, 20}, `max_features` {"sqrt", 0.5}.
+  - **lr:** `C` {0.01, 0.1, 1, 10}.
+
+**Done when:** `chosen.json` has a config for every method and `experiments.md` has every run.
+
+### Step 14 — Final test run
+
+`python -m spinwarn.run final` runs once, for every method:
+
+1. Thresholds at 1 and 0.5 FA/min from the chosen CV run's out-of-fold scores.
+2. Refit on all dev sessions, then score the test sessions via `load_test_sessions(confirm=True)`.
+3. Bootstrap intervals on test recall.
+4. Permutation importance for the best model, on the test sessions, scored by average precision.
+5. Time per prediction: median ms over 1,000 single-row `predict_proba` calls.
+6. Write `results/metrics.json` and `results/final.lock`.
+
+- **Run-once guard:** it refuses to run again while the lock exists. `--force` overrides, and the forced run is logged in `experiments.md` so it stays visible.
+- **Secondary horizon:** `--horizon 1.0` writes `metrics_h1.json` with its own lock.
+
+**Done when:** `metrics.json` exists and the test sessions were scored once.
+
+### Step 15 — Report and README
+
+- **`python -m spinwarn.report`:** reads `metrics.json` and writes:
+  - `results/results_table.md`;
+  - `results/recall_vs_fa.png` (all methods, CV);
+  - `results/importance.png`;
+  - the README section between `<!-- results:start -->` and `<!-- results:end -->`, rewritten. That's the "one command regenerates the table".
+- **README:** follow the Project Plan's outline. You write the story; Claude Code checks commands and numbers.
+- **`pip freeze > requirements.txt`** for exact reproduction. Commit `data/sample/`.
+- **Raw data (optional):** zip the raw CSVs as a GitHub release asset so the full pipeline can be rerun.
+- **Make the repo public.**
+
+**Done when:** from a fresh clone, `pytest` passes and `python -m spinwarn.report` regenerates the table, and the README's reproduce commands run end to end with the raw data.
+
+## Phase C — week 2 (optional)
+
+- **Step 16 — Live warning in DriftScore:**
+  - Incremental features over a 1 s ring buffer on a 60 Hz loop, using the same grid rule as Step 6.
+  - **Test:** replay a recorded session through the live code; the result must match `features.py` (`allclose`).
+  - **Model:** export with joblib. scikit-learn becomes an optional `[live]` extra, so DriftScore's core stays stdlib-only.
+  - **Budget:** features plus prediction under 16.7 ms.
+- **Step 17 — Extensions:** IsolationForest, the unseen car and the 1.0 s horizon, as new `--method` values and flags on `run.py`.

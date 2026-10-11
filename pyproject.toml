@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spinwarn"
+version = "0.1.0"
+description = "Spin early-warning model: predicts a spin 0.5 s ahead from Assetto Corsa telemetry."
+requires-python = ">=3.14"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "matplotlib",
+    "pyarrow",
+    "driftscore @ git+https://github.com/MihaiMike2005/DriftScoreUI.git",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "jupyter"]
+
+[tool.pytest.ini_options]
+filterwarnings = ["error::DeprecationWarning"]
