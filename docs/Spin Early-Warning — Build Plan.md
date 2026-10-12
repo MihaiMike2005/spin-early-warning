@@ -411,6 +411,21 @@ Tests:
 
 **Done when:** tests pass.
 
+**Results (2026-10-12):** done. 26 features; Sunday's three sessions take 0.04 s in all, with no NaN on any scored frame.
+
+- **Choices the plan left open:**
+  - "Last, mean, max of absolute value, slope" is all four on `abs_slip`, so left and right drifts read the same.
+  - **No feature knows left from right.** Yaw rate, yaw acceleration and lateral G are taken relative to the slide, frame by frame, as `<signal>_rel`: × sign(slip), the way `countersteer` is built from steer. Steering's last and mean are `countersteer`'s, plus `lock_last` for how close to full lock, so `steer` itself isn't a feature. A drift and its mirror image give the same features (tested, on both yaw paths; the test fails on the signed versions).
+    - **Why:** signed, a left and a right drift read opposite, which a linear model can't use. The only extra the signed versions carry is the direction, and 64% of Sunday's held-drift frames go one way, so that's mostly Sepang's corners, which the trees would learn instead of spin physics.
+    - **On Sunday's scored frames,** r with the target: yaw rate +0.09 signed, −0.18 relative; lateral G +0.07 and −0.08; steer +0.03, `countersteer` +0.08. In held drifts (|slip| 20–70°, over 30 km/h), `yaw_rate_rel` reads negative on 82% of frames and `lat_g_rel` on 96%.
+    - Computed in `features.py` from `slip_deg`, so `data.py` and the cache don't change.
+  - Names are `<signal>_<stat>`, so the `_last` features don't clash with the raw signals Step 10 keeps for the baselines.
+  - Windows in a segment's first `WINDOW_S` are partial and its slopes NaN; `label()` excludes those frames.
+  - The time index is `pd.to_timedelta(t)`. pandas rounds it to the nanosecond, so 1 s back lands exactly on a grid frame, and every window holds 60 frames. The test checks this at 552 s; a scratch check found it true for every frame of an hour.
+- **Causality is tested twice:** on `make_features` alone, and from raw packets through `to_grid` and `add_signals`, on both yaw paths, so a leak in the grid join or a rate would fail it too.
+- **For Step 13:** `rear_slip` spikes like the fronts in logcheck: median about 4, but up to 2.7e8. A 1 s mean catches a spike (over 1,000) on 4–5% of scored frames, reaching 5e6. The slope reads the spike itself: under 1% of scored frames, but up to 2.7e8. Trees cope, but logistic regression's StandardScaler won't. A signed log (sign × log1p of the absolute value) on both, in its pipeline, would fix it; a rolling median would fix only the mean.
+- **Only with `YAW_AXIS = None`:** yaw rate from heading is unknown for a segment's first `RATE_WINDOW_S`, so `yaw_rate_rel_slope` is NaN on the first 0.1 s of scored frames. Sunday's sessions have none, since those frames are excluded there anyway. The configured axis has no such gap.
+
 ### Step 10 — Dataset build and test lock
 
 - **`python -m spinwarn.run build`:** loads every session, labels it and computes features into `data/processed/dataset.parquet`. One row per grid frame: session, segment, t, target, excluded, features, and the raw signals the baselines need. Prints minutes, spins and positive frames per session.
