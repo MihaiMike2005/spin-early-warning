@@ -380,6 +380,24 @@ python -m spinwarn.spotcheck <session> --n 20 --video-offset 3.2
 
 **Done when:** the label rule is validated and the spin count is known.
 
+**Results (2026-10-12):** done. The spot-check is 20/20, no spin was missed in 5 minutes of video, and the rule finds 36 spins in 32.7 min, 1.1 a minute. `SPIN_HOLD_S` stays 0.
+
+- **Spot-check** (in `notes.md`): video offsets 3.89, 7.4 and 4.65 s, read off the status line. 18/20 as first marked: two 360s in `200553` were marked n, one deliberate and one ending in a wall. Marked again by whether the car got past sideways, as the rule asks, both are hits; spin 12's wall impact (15 g longitudinal) comes 1.1 s after its onset. Edge cases for the README's limitations: that wall, and `194646` spin 14, which peaks at 95° and is driven out of. Even with both as misses it's 18/20.
+- **Missed spins:** none in `202102` from 0:00 to 5:00, where the rule finds 5.
+- **360s are spins (your call):** a 360 is a show-off move, not held drifting, so it counts as a spin like any rotation past 90°, deliberate or not. Intent is the session's `kind`: Step 14 reports recall on natural and deliberate spins separately if both have enough, otherwise it goes under Limitations, as the Project Plan says.
+
+- **Rate and gaps:** AC 333.3–333.6 packets/s, 0.01–0.02% of packetId steps 2+. The gaps are Step 4's: in `194646`, the 0.68 s pause at 551.9 s, the 0.11 s stall after it and the 3.0 s pause at the end; the ~20 ms pause at the start of the other two.
+- **`COUNTERSTEER_SIGN = −1`:** steer × sign(slip) reads negative on 97–99% of held-drift frames (|slip| 20–70°, over 30 km/h, not spinning) in every session, median −0.55 to −0.56. The caches rebuilt themselves.
+- **Where the drifts sit:** of the frames at speed that aren't spinning, the median |slip| is 17–21°; 11–16% are over 45°, 1.1–1.6% over 75° and 0.2–0.4% over 85°. They thin out steadily up to 90°, with no bump just under it.
+- **Every spin:** 36 onsets, peak |slip| 91–180°. 27 of them slow to 10 km/h or less before re-arming.
+- **`SPIN_HOLD_S = 0.25` would drop 4 of the 36:** `194646` spins 3 and 6, `200553` 9, `202102` 10. None is a quick swing past 90° at speed: each starts at 20–25 km/h and falls under `MIN_SPEED_KMH` within 0.25 s, ending at 0–7 km/h. So the hold would drop slow spins, not intended high angles. On video all 4 are real spins: `194646` 3 and 6 in the random 20, the other two watched as extras.
+- **Choices the plan left open:**
+  - A spin's peak |slip| is over its frames from onset to re-arm at `MIN_SPEED_KMH` or more, where slip angle isn't noise. Its speed is the speed at onset.
+  - `spotcheck` takes one session, since each has its own offset. The notebook splits the 20 in proportion to each session's spins: 8, 7 and 5. Each pick is sorted by time and numbered as in the notebook, and prints as a table with an empty Hit column for `notes.md`.
+  - `spotcheck` refuses a locked test session, like everything but the final run.
+- **The offset method:** step the paused video frame by frame to where its clock ticks over to a whole second, and subtract the `t` the status line shows on that frame. The status line updates every 0.25 s, so it's good to about that. A spin spotted on video outside the sample, at 07:55 in `194646`, is the rule's spin 7 at 07:55.1.
+- **For later steps:** at 1.1 spins a minute, 100+ still needs about another hour of driving.
+
 ### Step 9 — Features (`features.py`)
 
 - **`make_features(df) -> DataFrame`:** the Project Plan's feature table plus `time_to_90` and `countersteer`. Computed per segment (`groupby('segment')`):

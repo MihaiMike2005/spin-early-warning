@@ -50,6 +50,20 @@ python -m spinwarn.labeling
 
 prints how many spins the label rule finds in each dev session.
 
+```
+python -m spinwarn.spotcheck <session> --n 20 --video-offset 3.2
+```
+
+lists seeded-random spin onsets of a dev session as times in its screen
+recording, each with its peak |slip| and speed, as a table to paste into
+`notes.md` and mark hit or miss on video. The offset is the video time at
+which the logger's status line shows t = 0.
+
+`notebooks/01_explore.ipynb` shows each dev session: the raw rate and gaps,
+slip angle with the onsets marked, zooms on three onsets, where the drifts
+sit relative to 90°, the countersteer sign check behind `COUNTERSTEER_SIGN`,
+and every spin with the spot-check commands.
+
 ## Layout
 
 | Path | What it is |
@@ -59,5 +73,6 @@ prints how many spins the label rule finds in each dev session.
 | `data/processed/` | Sessions on the 60 Hz grid with derived signals, cached (gitignored) |
 | `src/spinwarn/config.py` | Every constant, in seconds |
 | `src/spinwarn/` | The pipeline: load, label, features, models, evaluation |
+| `notebooks/01_explore.ipynb` | Rate and gaps, slip with onsets, the countersteer sign, every spin |
 | `notes.md` | Session log: car, track, setup, minutes, spins, kind, video |
 | `experiments.md` | One row per CV run |

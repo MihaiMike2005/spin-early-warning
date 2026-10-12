@@ -162,7 +162,7 @@ def test_axes_wheels_and_steering_map_to_their_signals():
 
     assert (df["lat_g"] == 0.8).all() and (df["lon_g"] == -0.3).all()
     assert (df["rear_slip"] == 5.0).all()
-    assert (df["countersteer"] == -0.6).all()   # slip +30°, so sign(slip) = +1
+    assert (df["countersteer"] == -0.6 * data.COUNTERSTEER_SIGN).all()   # slip +30°, so sign(slip) = +1
     assert (df["lock"] == 0.6).all()
 
 

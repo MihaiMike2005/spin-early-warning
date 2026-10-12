@@ -36,5 +36,6 @@ REVERSE_GEAR = 0          # AC gear: 0 = R, 1 = N, 2 = 1st
 YAW_AXIS, YAW_SIGN = 1, 1           # ang_vel_y; YAW_AXIS None -> yaw rate from heading
 LAT_G_AXIS, LAT_G_SIGN = 0, 1       # acc_g_x
 LON_G_AXIS, LON_G_SIGN = 2, 1       # acc_g_z
-# From Step 8's notebook (held drifts should read positive):
-COUNTERSTEER_SIGN = 1
+# From Step 8's notebook (held drifts should read positive): steer × sign(slip)
+# reads negative on 97-99% of held-drift frames in every session, median -0.56.
+COUNTERSTEER_SIGN = -1
