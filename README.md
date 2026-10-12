@@ -34,12 +34,23 @@ Raw recordings go in `data/raw/`, which git ignores: the logger's CSV and
 JSON for each session, copied from the AC PC. `notes.md` is the session log.
 The screen recordings stay outside the repo.
 
+```
+python -m spinwarn.data [--rebuild]
+```
+
+resamples every dev session onto the 60 Hz grid, adds the derived signals
+and caches it in `data/processed/`. Each cached session remembers the
+constants that built it and is rebuilt when `config.py` changes them.
+`--rebuild` forces it, for what the cache can't see: a change to the code,
+or a raw CSV copied over again.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `docs/` | The Project Plan and the Build Plan |
 | `data/raw/` | Logger CSV + JSON per session (gitignored) |
+| `data/processed/` | Sessions on the 60 Hz grid with derived signals, cached (gitignored) |
 | `src/spinwarn/config.py` | Every constant, in seconds |
 | `src/spinwarn/` | The pipeline: load, label, features, models, evaluation |
 | `notes.md` | Session log: car, track, setup, minutes, spins, kind, video |

@@ -297,7 +297,7 @@ COUNTERSTEER_SIGN = 1
   - `rear_slip`: mean of the RL and RR wheel slip.
   - `countersteer` = steer × sign(slip) × `COUNTERSTEER_SIGN`, and `lock` = |steer|.
   - `time_to_90` = (90 − `abs_slip`) ÷ `abs_slip_rate` when the rate is positive, otherwise `TTS_CAP_S`; clipped to [0, `TTS_CAP_S`].
-- **`load_session(session_id)`:** the three steps above, cached to `data/processed/<id>.parquet`. `--rebuild` deletes the cache after a config change.
+- **`load_session(session_id)`:** the three steps above, cached to `data/processed/<id>.parquet`. The cache rebuilds itself after a config change; `--rebuild` forces it after a code change.
 - **Session lists:** `list_sessions()` and `dev_sessions()` from `splits.json`. `load_test_sessions(confirm=False)` raises unless `confirm=True`.
 
 Tests:
@@ -306,6 +306,20 @@ Tests:
 - **Slip angle:** a straight-line trace reads 0 (proves the driftscore wiring).
 
 **Done when:** tests pass, and Sunday's sessions load and plot.
+
+**Results (2026-10-12):** done. `python -m spinwarn.data` loads Sunday's three sessions in about 1 s.
+
+- **On the grid:** `194646` 52,180 frames, 14.5 min, segments 0, 2 and 3; `200553` 29,583, 8.2 min, one segment; `202102` 35,937, 10.0 min, one segment. Segment ids can skip: in `194646`, segment 1 is the single packet between the 0.7 s pause and the 0.11 s stall, and gets no grid point. Segment 3 is the 0.9 s after the final pause, so Step 7 excludes all of it.
+- **Choices the plan left open:**
+  - Slip is zeroed below driftscore's `SLIP_SPEED_FLOOR_KMH` (5 km/h), as `app.py` does.
+  - Every derived rate (d|slip|/dt, `yaw_acc`, yaw rate from heading) is a backward difference over `RATE_WINDOW_S` inside the segment: each grid point's packet is up to ~4.5 ms old, too jittery for one 1/60 s step.
+  - `splits.json` is `{"test": [ids]}`; Step 10's `lock-test` writes that.
+  - Each cached session stores the constants that built it (`built_with()`, in the Parquet metadata) and rebuilds itself when they change. `--rebuild`, on `python -m spinwarn.data` (dev sessions only), forces it for what the cache can't see: a code change here or in driftscore, or a raw CSV copied over again. The cache is written aside and renamed into place, so a write cut short can't leave a damaged one.
+  - `load_test_sessions` always rebuilds from the raw CSVs, never from the cache: `--rebuild` doesn't reach test sessions, so their cache could predate a code change. Step 14 needs nothing extra.
+  - Paths (`RAW_DIR`, `PROCESSED_DIR`, `SPLITS_PATH`) are in `config.py`.
+- **Yaw fallback:** −d(heading)/dt agrees with `ang_vel_y` on all three sessions, r 0.995, ratio 0.999.
+- **For Step 8:** with `COUNTERSTEER_SIGN = 1`, held drifts (|slip| 20–70°, over 30 km/h) read negative 98–99% of the time, median −0.56, so it should become −1. The cache rebuilds itself when it changes.
+- **For Step 7, a preview** from a scratch version of the rule: about 36 onsets (14, 12, 10), not the ~90 of the driver's counts. Even every rise past 90° at any speed is only 43. 26 of the 36 end under 10 km/h, and none is a quick swing past 90° and back: one spends under 0.25 s over 90°. Reverse entries and big saves peak at 60–90° (58 of them) and aren't counted. At ~1.1 spins a minute, 100+ needs about another hour of driving; the deliberate session gave ~1.5 a minute.
 
 ### Step 7 — Labels (`labeling.py`)
 
