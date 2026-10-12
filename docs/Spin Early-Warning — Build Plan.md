@@ -210,7 +210,8 @@ README: logcheck in the Layout table, and as step 2 of the "After" routine: run 
   That's about 2.7 spins a minute, well above the Project Plan's 0.5–1. Step 7's onset count gives the real number.
 - **Not in the dataset:** the Brooklyn Park test runs. `120846` was recorded on the old 5 ms poll, `191720` is the live check, and `191522` and `191538` have 0 rows (AC status OFF). `191720` and its video are a candidate for `data/sample/`.
 - **Video offset:** the logger's status line is readable in the screen recording. On `191720`, t = 0 fell at about 8.8 s into the video. Step 8 reads each session's offset the same way.
-- **Notes, harmless:** "AC stalled" can follow a pause. In `194646` at 552.6 s, AC's physics hitched for 0.11 s right after a 0.7 s pause. That gap is over `GAP_S`, so Step 6 cuts there. A ~20 ms `PAUSE` right at the start of a session is common (`191720`, `200553`, `202102`). It falls in a segment's first `WINDOW_S`, which Step 7 excludes anyway.
+- **Notes, harmless:** "AC stalled" can follow a pause. In `194646` at 552.6 s, AC's physics hitched for 0.11 s right after a 0.7 s pause. That gap is over `GAP_S`, so Step 6 cuts there. A ~20 ms `PAUSE` right at the start of a session is common (`191720`, `200553`, `202102`): AC pauses itself whenever it loses focus, and the logger's PowerShell window takes it at the start and again at Ctrl+C. It falls in a segment's first `WINDOW_S`, which Step 7 excludes anyway.
+- **Pauses are never mid-drift:** you pause only with the car off a drift. Every pause on Sunday came at 6 km/h or less, apart from 552 s in `194646`: rolling straight at 24 km/h in neutral, after which it came back stopped (a reset from the pause menu).
 
 ## Phase B — spin-early-warning (Mac)
 
@@ -346,6 +347,16 @@ Tests:
 
 **Done when:** tests pass; the onset count per session is printed.
 
+**Results (2026-10-12):** done. `python -m spinwarn.labeling` finds 36 onsets in 32.7 min: `194646` 14, `200553` 12, `202102` 10, the same as Step 6's preview. At 1.1 a minute, 100+ still needs about another hour of driving.
+
+- **Choices the plan left open:**
+  - Nothing in reverse gear starts a spin. Reversing reads |slip| near 180°, so backing up at 20 km/h or more would count as one, and every frame before it is excluded as reverse, so no model could catch it. On Sunday's sessions every reverse stretch falls inside a spin already (one reached 20.3 km/h, in `200553`), so this changes nothing yet.
+  - The session starts armed, and armed or not carries across a gap: a pause freezes the car, so a spin running through one stays one spin. The hold and the re-arm start over after a gap. No gap in Sunday's sessions falls inside a spin, and you never pause mid-drift, so only one of AC's own short stalls ever could.
+  - Edges are compared in grid frames, not float seconds, so none hangs on an ulp. Held for `SPIN_HOLD_S` means over 90° from the onset frame through the frame `SPIN_HOLD_S` later; re-arm is the frame `REARM_S` after the run's first.
+  - `target` counts only onsets in the same segment. Frames across a gap are excluded anyway.
+  - The first `WINDOW_S` is t − segment start < 1 s, so the first scored frame is the first one with Step 9's 1 s slope.
+- **On Sunday's sessions:** 11–18% of frames are spinning and 13–22% excluded in all. No onset falls in a segment's first `WINDOW_S`, and all 30 frames before every onset are scored. `202102` ends still spinning: its last spin, at 594.7 s, never re-arms.
+
 ### Step 8 — Explore and spot-check
 
 `notebooks/01_explore.ipynb`, per session:
@@ -363,6 +374,7 @@ python -m spinwarn.spotcheck <session> --n 20 --video-offset 3.2
 
 - **Output:** 20 seeded-random onsets as video timestamps (mm:ss.s), each with its peak |slip| and speed.
 - **Video offset:** the video time at which the logger's status line shows `t = 0`. Read it off the recording.
+  - Pauses don't move it. The logger's `t` keeps counting through a pause, AC's own at the start included, and so does the recording, so one offset should hold for the whole session. Read it once more after a pause, such as 552 s in `194646`, to confirm.
 
 (You) Watch each onset and mark it hit or miss in `notes.md`. Under 18/20, set `SPIN_HOLD_S = 0.25` and rerun. Also watch 5 minutes and count missed spins.
 

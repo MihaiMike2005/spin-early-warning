@@ -44,6 +44,12 @@ constants that built it and is rebuilt when `config.py` changes them.
 `--rebuild` forces it, for what the cache can't see: a change to the code,
 or a raw CSV copied over again.
 
+```
+python -m spinwarn.labeling
+```
+
+prints how many spins the label rule finds in each dev session.
+
 ## Layout
 
 | Path | What it is |
