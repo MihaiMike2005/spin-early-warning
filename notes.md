@@ -66,7 +66,7 @@ Missed: 0
 
 ## Test runs, not in the dataset
 
-Both on Brooklyn Park. Their CSV and JSON are in `~/Downloads/raw 2`; only their videos are in `../driftsessions/videos/`.
+Both on Brooklyn Park. Their CSV and JSON are in `../driftsessions/test-runs/`, not `data/raw/`, which would put them in the dataset. Their videos are in `../driftsessions/videos/`.
 
 - `2026-10-11_120846`: first test, on the old 5 ms poll. Video `2026-10-11 12-09-46.mp4`.
 - `2026-10-11_191720`: the Step 4 live check. Video `2026-10-11 19-17-11.mp4`, t = 0 at 8.8 s (read off the status line). A candidate for `data/sample/`.
