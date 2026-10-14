@@ -472,6 +472,21 @@ Tests:
 
 **Done when:** tests pass.
 
+**Results (2026-10-14):** done. 32 tests. On Sunday's dataset, B1's recall-vs-FA curve and its 1 FA/min threshold take 0.05 s over 167 candidate thresholds, with 36 spins in 27.1 scored minutes, as Step 10 counts.
+
+- **Choices the plan left open:**
+  - `find_alerts` also takes `excluded`, since the −∞ has to come from somewhere. An alarm is score > threshold, strictly, so a −∞ frame never alarms, even at threshold −∞.
+  - An alert's (start, end) are the times of its first and last alarm frame. Alarms are "apart" by the next one's first frame minus the last one's last frame: exactly `MERGE_GAP_S` doesn't merge.
+  - Time in alarm counts every scored frame from an alert's first frame to its last, so the short dips a merge bridges count as in alarm.
+  - Alerts and onsets are matched within a segment, as `target` is labelled: an onset just after a gap neither catches an alert before it nor excuses it as a false alarm.
+  - Times are compared as whole grid frames, as in `labeling.py`, so no credit-window edge depends on float rounding. Both edges are inclusive: an alert ending exactly 1.0 s before onset, or starting exactly 0.1 s before, is a catch.
+  - On real data an alert can't stay on through a spin: frames from the onset to the re-arm are excluded. So it ends on the frame before the onset, which is still a catch with 1.0 s lead and not a false alarm (tested).
+  - `summarize(df, score, threshold)` also returns `alerts`, the denominator of alert precision. A ratio with nothing to divide by (no spins, no alerts, nothing caught) is NaN.
+  - Candidate thresholds are `N_THRESHOLDS` = 200 (new in `config.py`) quantiles of the finite scores on scored frames, spaced geometrically in the top tail, where 1 FA/min lies, plus the highest score, which alarms nowhere. `threshold_for_fa` scans them all rather than bisecting: false alarms don't always fall as the threshold rises, since one alert can split into two.
+  - `pr_auc` scores the ranks, which changes nothing but lets B2's −∞ through scikit-learn.
+  - A NaN score on a scored frame raises: it would never alarm, and would pass for a model that just never fires.
+- **For Step 14:** `bootstrap_recall` takes one bool per test spin, and `summarize` returns only counts. Step 14 needs a way to get the per-spin catches out: `match`, segment by segment, already returns them.
+
 ### Step 12 — Baselines and CV harness
 
 **`baselines.py`:**

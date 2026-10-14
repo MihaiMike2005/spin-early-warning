@@ -26,6 +26,7 @@ MERGE_GAP_S = 0.2
 CREDIT_EARLY_S, CREDIT_LATE_S, FA_AFTER_S = 1.0, 0.1, 1.0
 TRAIN_HZ = 20
 FA_TARGETS = (1.0, 0.5)
+N_THRESHOLDS = 200        # candidate alert thresholds: score quantiles, finest in the top tail
 N_FOLDS = 4
 SEED = 0
 REVERSE_GEAR = 0          # AC gear: 0 = R, 1 = N, 2 = 1st
