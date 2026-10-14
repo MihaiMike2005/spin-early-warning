@@ -434,6 +434,17 @@ Tests:
 
 **Done when:** the dataset builds and `splits.json` is committed.
 
+**Results (2026-10-14):** the code is done; the lock waits for the new sessions. On Sunday's three, `build` gives 117,700 frames in 32.7 min (27.1 scored), 36 spins and 1,080 positive frames (36 × 30, 1.1% of scored frames), with no NaN in any feature or baseline signal on a scored frame.
+
+- **Choices the plan left open:**
+  - The dataset adds an `onset` column, true on each spin's first frame, so Step 11 scores alerts from the dataset alone.
+  - `build` reads dev sessions only, so the test sessions never reach it, as the ground rules ask. Built before the lock, it holds every session.
+  - The dataset remembers the sessions and constants that built it. `load_dataset()` refuses it once they change: a session copied in, the lock, or a `config.py` change. Built before the lock, it still holds the test sessions, and CV would train on them. Steps 12–14 read it through `load_dataset()`.
+  - `load_dataset()` also refuses any dataset until the test sessions are locked, so no modelling can start before the lock, as the Project Plan asks. `build` still works before it, for the spin counts to pick by.
+  - `lock-test` refuses unless at least `N_FOLDS` sessions are left, since GroupKFold needs a session per fold. Today's 3 are refused; 6 sessions with 2 locked leave exactly 4. It writes the ids sorted, and never over an existing file.
+- **Which to lock:** 2 of the new sessions, not Sunday's. Step 9 weighed the relative features partly by their correlation with the target on all three Sunday sessions, so a test session from them was already looked at. One natural and one deliberate, if the spin counts allow, so Step 14 can report recall on each.
+- **For Step 12:** `target` and `excluded` are built at `HORIZON_S`. The `onset` column gives `target` at any horizon, but `excluded` already holds each segment's last 0.5 s, so `--horizon 1.0` needs a dataset of its own: e.g. `build --horizon` writing a second file, with the horizon in its `built_with`.
+
 ### Step 11 — Alert scoring (`evaluate.py`)
 
 - **`find_alerts(t, score, threshold, segment) -> [(start, end)]`:**

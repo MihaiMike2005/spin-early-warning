@@ -64,13 +64,35 @@ slip angle with the onsets marked, zooms on three onsets, where the drifts
 sit relative to 90°, the countersteer sign check behind `COUNTERSTEER_SIGN`,
 and every spin with the spot-check commands.
 
+```
+python -m spinwarn.run build
+```
+
+labels every dev session, computes its features and writes them into one
+table, `data/processed/dataset.parquet`, one row per grid frame, then prints
+minutes, spins and positive frames per session. Nothing models on it until
+the test sessions are locked. A table built from other sessions or other
+constants is refused, so build again after copying in a session, locking
+the test sessions or changing `config.py`. It can't see a change to the
+code, so build again after `python -m spinwarn.data --rebuild` too.
+
+```
+python -m spinwarn.run lock-test --sessions A,B
+```
+
+sets the test sessions aside in `data/splits.json`, once, before any
+modelling: pick 2 with typical spin counts from build's output, commit the
+file, and build again. It refuses if the file exists, or if fewer than
+`N_FOLDS` sessions would be left for cross-validation.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `docs/` | The Project Plan and the Build Plan |
 | `data/raw/` | Logger CSV + JSON per session (gitignored) |
-| `data/processed/` | Sessions on the 60 Hz grid with derived signals, cached (gitignored) |
+| `data/processed/` | Sessions on the 60 Hz grid with derived signals, and the dataset (gitignored) |
+| `data/splits.json` | The locked test sessions (committed) |
 | `src/spinwarn/config.py` | Every constant, in seconds |
 | `src/spinwarn/` | The pipeline: load, label, features, models, evaluation |
 | `notebooks/01_explore.ipynb` | Rate and gaps, slip with onsets, the countersteer sign, every spin |

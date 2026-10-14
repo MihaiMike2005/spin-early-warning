@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]    # the repo: this file is src/spinwarn/config.py
 RAW_DIR = ROOT / "data" / "raw"               # logger CSV + JSON, copied from the AC PC
 PROCESSED_DIR = ROOT / "data" / "processed"   # cached tables, rebuilt from RAW_DIR
+DATASET_PATH = PROCESSED_DIR / "dataset.parquet"   # every dev session, labelled, with features
 SPLITS_PATH = ROOT / "data" / "splits.json"   # the locked test sessions
 
 GRID_HZ = 60             # raw packets are resampled onto this uniform grid
