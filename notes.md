@@ -9,6 +9,10 @@ CSV and JSON are in `data/raw/`. The videos stay outside the repo, in `../drifts
 | `2026-10-11_194646` | 2026-10-11 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 14.5 | ~40 | natural | `2026-10-11 19-46-42.mp4` | 3.89 s | 0.7 s pause at 552 s, then AC stalled for 0.11 s |
 | `2026-10-11_200553` | 2026-10-11 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 8.2 | 20+ | deliberate | `2026-10-11 20-05-46.mp4` | 7.4 s | Logged as natural by mistake; JSON `kind` fixed by hand |
 | `2026-10-11_202102` | 2026-10-11 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 10.0 | 30+ | natural | `2026-10-11 20-20-57.mp4` | 4.65 s | |
+| `2026-10-14_223131` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 6.5 | 1 (labeler) | natural | none | | Video deleted by mistake, so this one can't be spot-checked |
+| `2026-10-14_224308` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 11.6 | 4 (labeler) | natural | `2026-10-14 22-43-05.mp4` | ~3 s | |
+| `2026-10-14_225818` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 13.9 | 28 (labeler) | deliberate | `2026-10-14 22-58-14.mp4` | ~4 s | |
+| `2026-10-14_233636` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 10.2 | 17 (labeler) | deliberate | `2026-10-14 23-36-28.mp4` | ~8 s | |
 
 ## Label spot-check (Step 8)
 
