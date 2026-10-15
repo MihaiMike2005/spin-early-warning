@@ -11,8 +11,8 @@ CSV and JSON are in `data/raw/`. The videos stay outside the repo, in `../drifts
 | `2026-10-11_202102` | 2026-10-11 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 10.0 | 30+ | natural | `2026-10-11 20-20-57.mp4` | 4.65 s | |
 | `2026-10-14_223131` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 6.5 | 1 (labeler) | natural | none | | Video deleted by mistake, so this one can't be spot-checked |
 | `2026-10-14_224308` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 11.6 | 4 (labeler) | natural | `2026-10-14 22-43-05.mp4` | ~3 s | |
-| `2026-10-14_225818` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 13.9 | 28 (labeler) | deliberate | `2026-10-14 22-58-14.mp4` | ~4 s | |
-| `2026-10-14_233636` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 10.2 | 17 (labeler) | deliberate | `2026-10-14 23-36-28.mp4` | ~8 s | |
+| `2026-10-14_225818` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 13.9 | 27 (labeler) | deliberate | `2026-10-14 22-58-14.mp4` | ~4 s | 28 until the 2026-10-15 reverse fix: at 604 s, a shift out of reverse while still rolling backward was counted as a spin |
+| `2026-10-14_233636` | 2026-10-14 | hush_nissan_silvia_s14 | rmi_gpk_sepang | TC off | 10.2 | 17 (labeler) | deliberate | `2026-10-14 23-36-28.mp4` | ~8 s | Test session. Counted before the 2026-10-15 reverse fix; the final run relabels it |
 
 ## Label spot-check (Step 8)
 

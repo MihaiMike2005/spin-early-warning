@@ -350,7 +350,7 @@ Tests:
 **Results (2026-10-12):** done. `python -m spinwarn.labeling` finds 36 onsets in 32.7 min: `194646` 14, `200553` 12, `202102` 10, the same as Step 6's preview. At 1.1 a minute, 100+ still needs about another hour of driving.
 
 - **Choices the plan left open:**
-  - Nothing in reverse gear starts a spin. Reversing reads |slip| near 180°, so backing up at 20 km/h or more would count as one, and every frame before it is excluded as reverse, so no model could catch it. On Sunday's sessions every reverse stretch falls inside a spin already (one reached 20.3 km/h, in `200553`), so this changes nothing yet.
+  - Nothing in reverse gear starts a spin. Reversing reads |slip| near 180°, so backing up at 20 km/h or more would count as one, and every frame before it is excluded as reverse, so no model could catch it. On Sunday's sessions every reverse stretch falls inside a spin already (one reached 20.3 km/h, in `200553`), so this changes nothing yet. Since Step 10, reverse gear disarms the car instead, which also covers a shift out of reverse while still rolling backward: see Step 10's results.
   - The session starts armed, and armed or not carries across a gap: a pause freezes the car, so a spin running through one stays one spin. The hold and the re-arm start over after a gap. No gap in Sunday's sessions falls inside a spin, and you never pause mid-drift, so only one of AC's own short stalls ever could.
   - Edges are compared in grid frames, not float seconds, so none hangs on an ulp. Held for `SPIN_HOLD_S` means over 90° from the onset frame through the frame `SPIN_HOLD_S` later; re-arm is the frame `REARM_S` after the run's first.
   - `target` counts only onsets in the same segment. Frames across a gap are excluded anyway.
@@ -434,7 +434,7 @@ Tests:
 
 **Done when:** the dataset builds and `splits.json` is committed.
 
-**Results (2026-10-14):** the code is done; the lock waits for the new sessions. On Sunday's three, `build` gives 117,700 frames in 32.7 min (27.1 scored), 36 spins and 1,080 positive frames (36 × 30, 1.1% of scored frames), with no NaN in any feature or baseline signal on a scored frame.
+**Results (2026-10-14, lock 2026-10-15):** done. On Sunday's three, `build` gives 117,700 frames in 32.7 min (27.1 scored), 36 spins and 1,080 positive frames (36 × 30, 1.1% of scored frames), with no NaN in any feature or baseline signal on a scored frame.
 
 - **Choices the plan left open:**
   - The dataset adds an `onset` column, true on each spin's first frame, so Step 11 scores alerts from the dataset alone.
@@ -442,7 +442,24 @@ Tests:
   - The dataset remembers the sessions and constants that built it. `load_dataset()` refuses it once they change: a session copied in, the lock, or a `config.py` change. Built before the lock, it still holds the test sessions, and CV would train on them. Steps 12–14 read it through `load_dataset()`.
   - `load_dataset()` also refuses any dataset until the test sessions are locked, so no modelling can start before the lock, as the Project Plan asks. `build` still works before it, for the spin counts to pick by.
   - `lock-test` refuses unless at least `N_FOLDS` sessions are left, since GroupKFold needs a session per fold. Today's 3 are refused; 6 sessions with 2 locked leave exactly 4. It writes the ids sorted, and never over an existing file.
-- **Which to lock:** 2 of the new sessions, not Sunday's. Step 9 weighed the relative features partly by their correlation with the target on all three Sunday sessions, so a test session from them was already looked at. One natural and one deliberate, if the spin counts allow, so Step 14 can report recall on each.
+- **The lock (2026-10-15):** `2026-10-11_202102` (natural, 10.0 min, 10 spins) and `2026-10-14_233636` (deliberate, 10.2 min, 17 spins), committed in `9cf85dc`. One natural and one deliberate, so Step 14 can report recall on each; one from each recording day; each close to the usual spin rate for its kind. The two biggest sessions (`194646`, `225818`) and Oct 14's two sparse natural runs (`223131` 1 spin, `224308` 4) stay in the dev set for training.
+  - **Not what this step first said:** it said 2 of the new sessions, not Sunday's. But Oct 14's natural runs are too sparse to test on, so the natural test session had to come from Sunday. Step 9 weighed the relative features partly by their correlation with the target on all three Sunday sessions, `202102` among them, so it isn't fully unseen. That goes under the README's limitations.
+  - `233636`'s 17 is the labeler's count from before the reverse fix below. The final run relabels both test sessions with the current rule, and nothing looks at them before it.
+- **The reverse fix (2026-10-15):** the dev set had one false spin, `225818` at 603.97 s. Backing up at 20.6 km/h, the driver shifted out of reverse while the car still rolled backward, so the next frame was over 90° at speed and out of reverse gear, and Step 7's rule counted an onset. All 30 frames before it were excluded (reverse, slow), so no method could ever have caught it. Found by checking that every onset has its 30 scored frames, as Step 7 found on Sunday's sessions: this was the only one without.
+  - Reverse gear now disarms the car the way a spin does. Its frames up to the re-arm are excluded (`reversing`, beside `spinning`), and a reverse inside a spin is part of the spin and restarts its re-arm. `spinning` still means onset to re-arm, so `spotcheck` and the notebook are unchanged.
+  - Rebuilt, it changes nothing else: that one onset and its 30 target frames go, and no scored frame changes in any dev session.
+- **The dev set after the lock and the fix:**
+
+  | Session | Kind | Min | Scored min | Spins | Positive frames |
+  | --- | --- | --- | --- | --- | --- |
+  | `2026-10-11_194646` | natural | 14.5 | 12.0 | 14 | 420 |
+  | `2026-10-11_200553` | deliberate | 8.2 | 6.4 | 12 | 360 |
+  | `2026-10-14_223131` | natural | 6.5 | 6.2 | 1 | 30 |
+  | `2026-10-14_224308` | natural | 11.6 | 10.9 | 4 | 120 |
+  | `2026-10-14_225818` | deliberate | 13.9 | 10.7 | 27 | 810 |
+  | **Total** | | 54.7 | 46.3 | 58 | 1,740 (1.0% of scored) |
+
+  Every spin has all 30 frames before it scored. With the test sessions' 27, that's 85 spins over 7 sessions, short of the Project Plan's 100+ over about 10; recording stopped there. Step 14's interval on test recall will be wide.
 - **For Step 12:** `target` and `excluded` are built at `HORIZON_S`. The `onset` column gives `target` at any horizon, but `excluded` already holds each segment's last 0.5 s, so `--horizon 1.0` needs a dataset of its own: e.g. `build --horizon` writing a second file, with the horizon in its `built_with`.
 
 ### Step 11 — Alert scoring (`evaluate.py`)

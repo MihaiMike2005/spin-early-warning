@@ -113,6 +113,31 @@ def test_reversing_at_speed_is_not_a_spin():
     assert len(onsets) == 0 and not spinning.any()
 
 
+def test_shifting_out_of_reverse_while_rolling_backward_is_not_a_spin():
+    # As in 225818 at 604 s: backing up at 30 km/h, out of reverse at 5 s
+    # but still rolling backward over 90° to 5.5 s, then driving on under
+    # 45°. Excluded from the reverse up to the re-arm, 2 s later.
+    df = session(12.0, lambda t: np.where(between(t, 3.0, 5.5), 160.0, 10.0), speed_kmh=30.0)
+    df.loc[between(df["t"], 3.0, 5.0), "gear"] = REVERSE_GEAR
+    onsets, spinning = labeling.find_onsets(df)
+    assert len(onsets) == 0 and not spinning.any()
+
+    labelled = labeling.label(df)
+    middle = between(labelled["t"], WINDOW_S, 12.0 - HORIZON_S)
+    assert times(labelled, labelled["excluded"] & middle) == pytest.approx(grid(3.0, 7.5))
+
+
+def test_a_reverse_inside_a_spin_is_part_of_it_and_restarts_the_re_arm():
+    # Spin at 5 s, under 45° from 6 s, but in reverse from 6.5 s to 7 s:
+    # re-armed 2 s after the reverse, not 2 s after 6 s.
+    df = session(12.0, lambda t: np.where(between(t, 5.0, 6.0), 120.0, 20.0), speed_kmh=30.0)
+    df.loc[between(df["t"], 6.5, 7.0), "gear"] = REVERSE_GEAR
+    onsets, spinning = labeling.find_onsets(df)
+
+    assert onsets == pytest.approx([5.0])
+    assert times(df, spinning) == pytest.approx(grid(5.0, 9.0))
+
+
 # --- SPIN_HOLD_S --------------------------------------------------------------
 
 def test_with_a_hold_a_short_spike_over_90_is_not_a_spin(monkeypatch):
@@ -186,13 +211,14 @@ def test_targets_never_reach_back_across_a_gap():
 # --- label's other exclusions -------------------------------------------------
 
 def test_slow_reverse_and_spinning_frames_are_excluded():
+    # The reverse from 4 s to 5 s stays excluded up to its re-arm at 7 s.
     slow = lambda t: np.where(between(t, 2.0, 3.0), 10.0, 50.0)
-    df = session(12.0, lambda t: np.where(between(t, 6.0, 7.0), 120.0, 20.0), speed_kmh=slow)
+    df = session(12.0, lambda t: np.where(between(t, 7.5, 8.5), 120.0, 20.0), speed_kmh=slow)
     df.loc[between(df["t"], 4.0, 5.0), "gear"] = REVERSE_GEAR
     df = labeling.label(df)
 
     middle = between(df["t"], WINDOW_S, 12.0 - HORIZON_S)
-    expected = between(df["t"], 2.0, 3.0) | between(df["t"], 4.0, 5.0) | between(df["t"], 6.0, 9.0)
+    expected = between(df["t"], 2.0, 3.0) | between(df["t"], 4.0, 7.0) | between(df["t"], 7.5, 10.5)
     assert (df.loc[middle, "excluded"] == expected[middle]).all()
 
 
