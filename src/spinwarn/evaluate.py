@@ -14,6 +14,10 @@ alert. The Project Plan's rules then score the alerts against the onsets:
 - so an alert starting under CREDIT_LATE_S before an onset is too late:
   neither caught nor false.
 
+The headline recall is stricter: it counts a catch only with at least
+MIN_LEAD_S of lead. By the rule above alone, a threshold on |slip| just
+under 90° catches nearly every spin 0.1 s ahead, so every method ties.
+
 Alerts and onsets are matched within a segment, as targets are labelled:
 what happens across a gap is unknown, and no feature reaches across one.
 Grid times are k / GRID_HZ, so they're compared as whole frames, and no
@@ -25,7 +29,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 
 from spinwarn.config import (
-    CREDIT_EARLY_S, CREDIT_LATE_S, FA_AFTER_S, GRID_HZ, MERGE_GAP_S, N_THRESHOLDS, SEED,
+    CREDIT_EARLY_S, CREDIT_LATE_S, FA_AFTER_S, GRID_HZ, MERGE_GAP_S, MIN_LEAD_S, N_THRESHOLDS, SEED,
 )
 
 
@@ -120,13 +124,15 @@ def _share(part, whole) -> float:
 
 def _summary(segments, threshold) -> dict:
     """summarize, from _segments: counts summed over every segment, then the ratios."""
-    n_spins = caught = alerts = false_alarms = in_alarm = scored = 0
+    n_spins = caught = caught_min_lead = alerts = false_alarms = in_alarm = scored = 0
     leads = []
+    min_lead = round(MIN_LEAD_S * GRID_HZ)
     for frame, score, onsets, scored_before in segments:
         starts, ends = _runs(frame, score > threshold)
         hit, lead, false_alarm = _match_frames(frame[starts], frame[ends], onsets)
         n_spins += len(onsets)
         caught += int(hit.sum())
+        caught_min_lead += int((hit & (lead >= min_lead)).sum())
         leads += (lead[hit] / GRID_HZ).tolist()
         alerts += len(starts)
         false_alarms += int(false_alarm.sum())
@@ -139,6 +145,8 @@ def _summary(segments, threshold) -> dict:
         "n_spins": n_spins,
         "caught": caught,
         "recall": _share(caught, n_spins),
+        "caught_min_lead": caught_min_lead,
+        "recall_min_lead": _share(caught_min_lead, n_spins),
         "alerts": alerts,
         "false_alarms": false_alarms,
         "minutes": minutes,
@@ -152,11 +160,16 @@ def _summary(segments, threshold) -> dict:
 def summarize(df, score, threshold) -> dict:
     """The alerts at threshold, scored, pooled over every session in df.
 
-    n_spins, caught, recall, alerts, false_alarms, minutes (of scored
-    driving), fa_per_min, alert_precision (alerts not false ÷ all),
-    time_in_alarm (share of scored frames with an alert active) and
-    median_lead (s, over caught spins). Sessions are pooled by summing
-    counts and minutes, not by averaging their ratios.
+    n_spins, caught, recall, caught_min_lead and recall_min_lead (the
+    headline: caught with at least MIN_LEAD_S of lead), alerts,
+    false_alarms, minutes (of scored driving), fa_per_min, alert_precision
+    (alerts not false ÷ all), time_in_alarm (share of scored frames with an
+    alert active) and median_lead (s, over caught spins). Sessions are
+    pooled by summing counts and minutes, not by averaging their ratios.
+
+    Alert precision can't rank methods: nearly every spin gets one alert
+    that isn't false, whatever the method, so it comes out close to
+    spins ÷ (spins + false alarms), which the false-alarm target sets.
     """
     return _summary(_segments(df, score), threshold)
 

@@ -11,7 +11,7 @@ import pytest
 from sklearn.metrics import average_precision_score
 
 from spinwarn import evaluate
-from spinwarn.config import GRID_HZ, MERGE_GAP_S
+from spinwarn.config import GRID_HZ, MERGE_GAP_S, MIN_LEAD_S
 
 
 STEP = 1 / GRID_HZ
@@ -163,10 +163,20 @@ def test_sessions_pool_by_summing_counts_and_minutes_and_never_match_across_sess
 
     minutes = 2 * (3600 - 60) / GRID_HZ / 60
     assert summary == pytest.approx({
-        "n_spins": 2, "caught": 1, "recall": 0.5, "alerts": 2, "false_alarms": 1,
-        "minutes": minutes, "fa_per_min": 1 / minutes, "alert_precision": 0.5,
+        "n_spins": 2, "caught": 1, "recall": 0.5, "caught_min_lead": 1, "recall_min_lead": 0.5,
+        "alerts": 2, "false_alarms": 1, "minutes": minutes, "fa_per_min": 1 / minutes, "alert_precision": 0.5,
         "time_in_alarm": (37 + 31) / (2 * (3600 - 60)), "median_lead": 0.8,
     })
+
+
+def test_the_headline_counts_a_catch_only_with_at_least_min_lead():
+    # Three spins, all caught: by alerts starting exactly MIN_LEAD_S before
+    # onset, one frame later, and 0.1 s before.
+    df = session(30.0, onsets=[5.0, 15.0, 25.0], excluded=[(0.0, 1.0 - STEP)])
+    score = spikes(df, (5.0 - MIN_LEAD_S, 4.9), (15.0 - MIN_LEAD_S + STEP, 14.9), (24.9, 24.95))
+    summary = evaluate.summarize(df, score, 0.5)
+    assert summary["caught"] == 3 and summary["recall"] == 1.0
+    assert summary["caught_min_lead"] == 1 and summary["recall_min_lead"] == pytest.approx(1 / 3)
 
 
 def test_an_onset_in_the_next_segment_neither_catches_nor_excuses_an_alert():
@@ -181,7 +191,7 @@ def test_no_alerts_and_no_spins_leave_their_ratios_undefined():
     df = session(10.0)
     summary = evaluate.summarize(df, np.zeros(len(df)), 0.5)
     assert summary["alerts"] == 0 and summary["fa_per_min"] == 0.0 and summary["time_in_alarm"] == 0.0
-    for name in ["recall", "alert_precision", "median_lead"]:
+    for name in ["recall", "recall_min_lead", "alert_precision", "median_lead"]:
         assert np.isnan(summary[name])
 
 

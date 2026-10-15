@@ -85,16 +85,51 @@ modelling: pick 2 with typical spin counts from build's output, commit the
 file, and build again. It refuses if the file exists, or if fewer than
 `N_FOLDS` sessions would be left for cross-validation.
 
+```
+python -m spinwarn.run build --horizon 1.0
+```
+
+labels the same table at another horizon, for the secondary run, into a
+file of its own beside the main one: `dataset_h1.parquet` for 1.0 s. It
+remembers its horizon, and is refused and rebuilt like the main one.
+
+```
+python -m spinwarn.run cv --method b1|b2|b3 [--params '{...}'] [--horizon 0.5] [--note "..."]
+```
+
+scores every dev frame with a method that never saw its session (4-fold
+CV, grouped by session) and prints PR-AUC, plus, at 1 and 0.5 false alarms
+a minute: recall, alert precision, time in alarm and median lead. It saves
+the scores to `results/cv/<run>.parquet` and appends a row to
+`experiments.md`. B2 without `--params` first picks its |slip| gate θ1
+from 10–80° by the headline below; `--params '{"theta1": 50}'` fixes it.
+`--horizon 1.0` reads the table `build --horizon 1.0` wrote.
+
+The headline is recall at 1 FA/min counting only spins warned of at least
+0.5 s ahead, the horizon the labels look. Recall by the Project Plan's
+rule, which counts any warning 0.1 s or more ahead, comes beside it. That
+rule alone can't separate methods: a spin is |slip| crossing 90°, and
+0.1 s before it every spin is already over 71.8°, so B1, a threshold on
+|slip| at 71.4°, catches all 58 on CV.
+
+Alert precision doesn't compare methods either. Nearly every spin a
+method alerts on gets exactly one alert that isn't false, so at a given
+false-alarm target alert precision is about spins alerted on ÷ (that +
+false alarms). Recall and the target already say that. At 0.5 FA/min on
+CV, B1 and B3 both come out at exactly 0.725: 58 alerts that aren't false
+and 22 false.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `docs/` | The Project Plan and the Build Plan |
 | `data/raw/` | Logger CSV + JSON per session (gitignored) |
-| `data/processed/` | Sessions on the 60 Hz grid with derived signals, and the dataset (gitignored) |
+| `data/processed/` | Sessions on the 60 Hz grid with derived signals, and the datasets (gitignored) |
 | `data/splits.json` | The locked test sessions (committed) |
 | `src/spinwarn/config.py` | Every constant, in seconds |
 | `src/spinwarn/` | The pipeline: load, label, features, models, evaluation |
 | `notebooks/01_explore.ipynb` | Rate and gaps, slip with onsets, the countersteer sign, every spin |
+| `results/cv/` | Out-of-fold scores, one file per CV run (gitignored) |
 | `notes.md` | Session log: car, track, setup, minutes, spins, kind, video |
 | `experiments.md` | One row per CV run |

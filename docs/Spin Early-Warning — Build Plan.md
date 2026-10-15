@@ -53,6 +53,8 @@ The Project Plan says what to build and why. This file says what code to write, 
 - **Raw packets are resampled to a uniform 60 Hz grid** (Step 6), whatever rate AC actually delivers. Thinning to 20 Hz for training then means every 3rd grid frame.
 - **The ML code is a package, `spinwarn`,** under `src/`, in the same layout as DriftScore, instead of loose modules.
 - **Python 3.14, not "3.11+".** Both machines run 3.14 (the AC PC 3.14.6), so DriftScore requires it and CI tests only it; spinwarn follows, since it installs driftscore. The Project Plan's reason for 3.11+ still holds: from 3.11, `time.sleep` on Windows uses a high-resolution timer, which the logger's 1 ms poll needs.
+- **The headline is recall at 1 FA/min counting only spins caught with at least 0.5 s of lead** (`MIN_LEAD_S`). Decided 2026-10-15 at Step 12, on CV only, before Step 13 and without looking at the test sessions. The Project Plan's "spins caught at 1 FA/min" counts any catch 0.1 s or more ahead. On CV that is maxed out: B1 catches all 58 spins, and at 0.3 s B3 still catches 57. At 0.5 s there is room above every baseline, and 0.5 s is `HORIZON_S`, how far ahead the labels look. The Plan's rule is kept as a second column. B2's θ1 is tuned on the headline, and Step 14's bootstrap interval covers both columns. Step 12's results have the numbers.
+- **Alert precision is still reported, but it doesn't compare methods.** Nearly every spin a method alerts on gets exactly one alert that isn't false. So at a given false-alarm target, alert precision is about spins alerted on ÷ (that + false alarms), which recall and the target already give. The README says so.
 
 ## Phase A — DriftScore: telemetry and logger
 
@@ -528,6 +530,42 @@ python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--hori
 
 **Done when:** B1, B2 and B3 rows exist in `experiments.md`.
 
+**Results (2026-10-15):** done. 48 new tests, 194 in all. B1, B2 and B3 are in `experiments.md`, each run taking 1–2 s on the dev set: 58 spins in 46.3 scored min over 5 sessions. "Lead ≥ 0.5 s" is the headline (see Decisions at the top); "any lead" is the Project Plan's rule.
+
+| Method | PR-AUC | @ 1 FA/min: recall, lead ≥ 0.5 s | Recall, any lead | Time in alarm | Median lead (s) | @ 0.5 FA/min: recall, lead ≥ 0.5 s | Recall, any lead | Median lead (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B1: \|slip\| | 0.440 | 0.17 (10/58) | 1.00 (58/58) | 1.9% | 0.28 | 0.09 (5/58) | 0.95 (55/58) | 0.22 |
+| B2: θ1 = 25° | 0.535 | 0.72 (42/58) | 0.81 (47/58) | 1.2% | 0.72 | 0.64 (37/58) | 0.78 (45/58) | 0.63 |
+| B3: time to 90° | 0.838 | 0.78 (45/58) | 0.98 (57/58) | 2.0% | 0.58 | 0.34 (20/58) | 0.98 (57/58) | 0.42 |
+
+- **By the Project Plan's rule, recall at 1 FA/min is maxed out on CV, so the headline changed.** B1 alarms over 71.4° and catches all 58 spins. 0.1 s before onset, every spin is already at 71.8° or more (median 84°). The label is |slip| crossing 90°, and |slip| rises at a median 64°/s on the frame before it, so a lower threshold on the same signal can't miss. Only 1.9% of scored frames are over 71°. Checked again without `evaluate.py`, straight from the dataset.
+  - **Requiring more lead,** at the same 1 FA/min thresholds, with B2 at the θ1 the old rule picked (70°). This is from the Step 12 review, checked again here:
+
+    | Minimum lead | B1 | B2 (θ1 = 70°) | B3 |
+    | --- | --- | --- | --- |
+    | 0.1 s (the Plan's rule) | 58 | 58 | 57 |
+    | 0.3 s | 25 | 29 | 57 |
+    | 0.5 s | 10 | 11 | 45 |
+
+    At 0.3 s, B3 still catches 57 of 58, so no model could beat it there. At 0.5 s there's room above every baseline. So the headline is recall at 1 FA/min with at least 0.5 s of lead (`MIN_LEAD_S`, new in `config.py`), with the Plan's rule beside it.
+  - `summarize` returns `caught_min_lead` and `recall_min_lead` beside `caught` and `recall`. Lead is compared in whole frames like every other edge, so an alert starting exactly 0.5 s before onset counts. Thresholds don't change: they're set by false alarms alone. `cv` prints both recalls, and `experiments.md` has a column for each.
+- **B2 is tuned on the headline,** since a baseline should be tuned on what it's compared on. θ1 goes by headline recall at 1 FA/min; ties go to the Plan's recall, then PR-AUC, then the lower θ1. The Plan's rule picked 70°: 58/58, but only 11 on the headline. The headline picked 30°, the bottom of 30–80°, with 40/58. A tuned baseline stuck at its grid edge flatters the models, so `B2_THETA1_DEG` now runs 10–80°, and it picks 25°: 42/58, and 47/58 by the Plan's rule. Headline recall is 40–42 from 10° to 30°, then falls steadily to 3 at 80°. PR-AUC peaks at 55° (0.616). `experiments.md` keeps the 30–80° run too.
+  - B2 at 25° alerts on fewer spins than at 70° (47 against 58) but warns of most of them early. At 0.5 FA/min it beats B3 on the headline, 37 against 20.
+  - θ1 is picked on the same CV scores it's reported on, like any tuned config, and so is every threshold, so CV numbers lean optimistic. Step 14's test sessions are the unbiased ones.
+- **Alert precision can't tell methods apart,** so it's out of the table above. Nearly every spin a method alerts on gets exactly one alert that isn't false: 58 for B1 at both targets, 60 and 58 for B3. So at a given false-alarm target, alert precision is about spins alerted on ÷ (that + false alarms). At 0.5 FA/min, B1 and B3 both come out at exactly 0.725 (80 alerts, 22 false). B2 is lower, 0.67 (69 alerts, 23 false), only because it alerts on fewer spins, which its recall already shows. `cv` still prints it, as the Project Plan asks, and the README says why it doesn't rank methods.
+- **Choices the plan left open:**
+  - **Folds:** GroupKFold without shuffling, so the same folds every run. It deals the sessions out largest first: fold 0 `194646` (14 spins), 1 `225818` (27), 2 `224308` (4), 3 `200553` and `223131` (13).
+  - **Thinning:** every 3rd grid frame counted from t = 0, then the non-excluded ones, so the same frames are kept whatever the segment or fold.
+  - **A model predicts** every held-out frame whose features are all known. A segment's first `WINDOW_S`, always excluded, gets NaN instead, since logistic regression can't take a NaN feature; on a scored frame, `evaluate` refuses the NaN.
+  - **Thresholds** at 1 and 0.5 FA/min are set by `threshold_for_fa` on the pooled out-of-fold scores they're reported on, as the Project Plan sets them "on the CV predictions".
+  - **B2 in `cv`:** without `--params`, it sweeps `B2_THETA1_DEG` (10–80°, new in `config.py`), prints the sweep and logs one row, the chosen θ1, with a note saying so. `--params '{"theta1": 50}'` fixes it. Params a baseline doesn't take, or that aren't numbers, are refused before the dataset loads.
+  - **Models:** `oof_scores` fits whatever `models.make_model` returns, per fold. `cv.METHODS` is b1, b2 and b3 until Step 13 adds lr, rf and hgb. The fit path is tested with a stand-in model: each fold's is fitted on the other folds' thinned, scored frames only, and scores only its own.
+  - **`experiments.md` has three columns more than this step lists:** Run, the id of the run's file `results/cv/<run>.parquet`; Horizon; and the headline recall, before the Plan's. A run id is `<date>_<time>_<method>`, plus `_h1` at 1.0 s and `_2`, `_3`… on a clash. A test checks the repo's header against the columns `cv` writes.
+  - **Each run's file** holds session, segment, t, target, excluded, onset, fold and score per frame, and in its metadata the run (method, params, horizon, note, metrics) and the dataset's sessions and `built_with`. That's enough for Step 14's thresholds and Step 15's curves without the dataset.
+  - `BASELINE_SIGNALS` in `run.py` now comes from `baselines.SIGNALS`.
+- **`build --horizon`,** as Step 10 suggested: `build --horizon 1.0` writes `dataset_h1.parquet` beside `dataset.parquet`, with its `horizon` in `built_with` (the key was `HORIZON_S`, so both datasets were rebuilt). `load_dataset(horizon)` and `cv --horizon 1.0` read it, and refuse it like the main one. A horizon must be over 0 and a whole number of grid frames. At 1.0 s it's the same 58 spins, every one with all 60 frames before it scored: 3,480 positive frames, 2.1% of scored, in 46.3 scored min.
+- **For Step 13:** `run.py cv` checks params with `baselines.check_params`, so the models need a check of their own. On the headline, the CV numbers to beat are B3's 45/58 at 1 FA/min and B2's 37/58 at 0.5 FA/min. Tuning still picks by PR-AUC, as the Project Plan says.
+
 ### Step 13 — Models and tuning
 
 - **`models.py`, `make_model(name, params)`:**
@@ -547,7 +585,7 @@ python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--hori
 
 1. Thresholds at 1 and 0.5 FA/min from the chosen CV run's out-of-fold scores.
 2. Refit on all dev sessions, then score the test sessions via `load_test_sessions(confirm=True)`.
-3. Bootstrap intervals on test recall.
+3. Bootstrap intervals on test recall, for both the headline (at least 0.5 s of lead) and the Project Plan's rule.
 4. Permutation importance for the best model, on the test sessions, scored by average precision.
 5. Time per prediction: median ms over 1,000 single-row `predict_proba` calls.
 6. Write `results/metrics.json` and `results/final.lock`.
@@ -565,6 +603,7 @@ python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--hori
   - `results/importance.png`;
   - the README section between `<!-- results:start -->` and `<!-- results:end -->`, rewritten. That's the "one command regenerates the table".
 - **README:** follow the Project Plan's outline. You write the story; Claude Code checks commands and numbers.
+  - The headline is recall with at least 0.5 s of lead. Say why the Plan's rule alone can't separate methods, and that alert precision doesn't rank them (Step 12's results).
 - **`pip freeze > requirements.txt`** for exact reproduction. Commit `data/sample/`.
 - **Raw data (optional):** zip the raw CSVs as a GitHub release asset so the full pipeline can be rerun.
 - **Make the repo public.**
