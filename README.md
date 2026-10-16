@@ -1,9 +1,132 @@
 # spin-early-warning
 
-Warns of a spin 0.5 s before it starts, from Assetto Corsa telemetry
-recorded with [DriftScore](https://github.com/MihaiMike2005/DriftScoreUI)'s
-logger, and compares the model with tuned physics baselines at the same
-false-alarm rate. Work in progress: the plans are in `docs/`.
+Warns of a spin in Assetto Corsa at least 0.5 s before it starts, from
+telemetry recorded with [DriftScore](https://github.com/MihaiMike2005/DriftScoreUI)'s
+logger. On two held-out sessions, at the thresholds set on CV for 0.5
+false alarms a minute, gradient boosting and random forest each warned of
+21 of 27 spins (78%) at least 0.5 s ahead, against 15 for the best tuned
+physics baseline and 5 for time to 90°. At 1 false alarm a minute they
+tie time to 90°, at 25 of 27.
+
+## Problem
+
+Drifting holds a car sideways on purpose, at the limit of grip. A spin is
+the same slide gone too far: the rear swings round past sideways. This
+repo asks whether a model can see one coming from the car's telemetry
+early enough to act on, at least 0.5 s before the slip angle passes 90°.
+
+It's framed the way failure prediction from sensor data is:
+
+- **Rare events.** 1.0% of the dev set's scored frames have a spin
+  starting in the next 0.5 s. A model that never warns is 99% accurate,
+  so models are compared on PR-AUC, not accuracy.
+- **Alarms, not frame labels.** A warning system raises alerts, so it's
+  scored on spins caught, false alarms a minute and the share of driving
+  the alarm is on.
+- **Lead time.** A warning only helps if it comes early. The headline
+  counts a spin as caught only with at least 0.5 s of warning.
+- **A physics baseline to beat.** Time to 90°, (90° − |slip|) ÷ d|slip|/dt,
+  is the drift version of time-to-collision from driver-assistance
+  systems. A model only means something if it beats that, tuned, at the
+  same false-alarm target.
+
+## Method
+
+### Sessions
+
+85 spins in 74.9 minutes of driving over 7 sessions, recorded on
+2026-10-11 and 2026-10-14: one driver, the S14 (`hush_nissan_silvia_s14`),
+on Sepang (`rmi_gpk_sepang`), TC off. DriftScore's logger polls AC's
+shared memory every 1 ms and keeps every new physics packet, about 333 a
+second, only while the session is live, never paused or in replay. A
+session is **deliberate** (trying to spin) or **natural** (holding drifts
+at the limit, so its spins are failed saves).
+
+| Session | Kind | Min | Scored min | Spins | Set |
+| --- | --- | --- | --- | --- | --- |
+| `2026-10-11_194646` | natural | 14.5 | 12.0 | 14 | dev |
+| `2026-10-11_200553` | deliberate | 8.2 | 6.4 | 12 | dev |
+| `2026-10-11_202102` | natural | 10.0 | 8.7 | 10 | test |
+| `2026-10-14_223131` | natural | 6.5 | 6.2 | 1 | dev |
+| `2026-10-14_224308` | natural | 11.6 | 10.9 | 4 | dev |
+| `2026-10-14_225818` | deliberate | 13.9 | 10.7 | 27 | dev |
+| `2026-10-14_233636` | deliberate | 10.2 | 7.7 | 17 | test |
+| **Total** | | 74.9 | 62.7 | 85 | |
+
+Each session is resampled onto a uniform 60 Hz grid, each grid point
+taking the last packet at or before it, as a live 60 Hz loop would see
+it, and cut into segments at any gap over 0.1 s. Every window and
+horizon is in seconds, not frames.
+
+### Labels
+
+A **spin** starts at the first frame where |slip angle| passes 90° at
+20 km/h or more. The next one can't start until the car re-arms, after
+2 s under 45° at 20 km/h or more, so a spin that ends at a standstill
+counts once. Reverse gear disarms the car too. A frame is **positive** if
+a spin starts in the 0.5 s after it. Frames that are already spinning,
+under 20 km/h, in reverse, in a segment's first 1 s (no full window yet)
+or in its last 0.5 s (no known future) are **excluded**: never trained on
+or scored. Slip angle comes from DriftScore's tested `slip_angle_deg`, so
+labels and features share the same math.
+
+The rule was checked against the screen recordings: 20 random onsets
+were all real spins on video, two of them borderline (see Limitations),
+and in 5 minutes of footage it missed none.
+
+### Features
+
+26 per frame, each from the 1 s before it and nothing after, computed
+per segment so no window spans a gap: |slip| (last, mean, max, slope),
+its rate, time to 90°, yaw rate and yaw acceleration, lateral and
+longitudinal G, countersteer and steering lock, throttle, brake, speed
+and rear wheel slip. Yaw rate, yaw acceleration, lateral G and steering
+are taken relative to the direction of the slide, so a drift and its mirror image read the
+same and no model can learn the track's corners instead. A test replaces
+everything after a frame with noise and checks that its features don't
+change, from raw packets through the grid to the features.
+
+### Baselines
+
+Three physics rules, tuned on the dev sessions like the models:
+
+- **B1:** alarm when |slip| is over a threshold.
+- **B2:** alarm on how fast |slip| is growing, while |slip| is over θ1.
+  θ1 = 25°, picked from 10–80° on CV.
+- **B3, time to 90°:** the seconds |slip| needs to reach 90° at its
+  current rate, capped at 5 s. Alarm when it drops under a threshold. The
+  strongest of the three, and the one to beat.
+
+### Models
+
+Logistic regression (scaled), random forest and gradient boosting
+(`HistGradientBoostingClassifier`), from scikit-learn, class-weighted for
+the rare positives and seeded. They train on scored frames thinned to
+20 Hz, since neighbouring 60 Hz frames are near-duplicates, and score
+every frame. Each is tuned on CV PR-AUC by a seeded random search: 15
+configs for each tree model, and logistic regression's whole grid of 4.
+No neural network: 85 events and 26 tabular features are too little for
+one, and the simpler models are easier to read.
+
+### Evaluation
+
+- **Split by session.** The 2 test sessions were locked on 2026-10-15,
+  before any modelling, and scored once, on 2026-10-16. Everything else
+  was chosen on the 5 dev sessions with 4-fold cross-validation grouped
+  by session, so no model is scored on a session it trained on.
+- **Scores to alerts.** Frames over a threshold alarm, and alarms under
+  0.2 s apart merge into one alert.
+- **Caught.** A spin is caught if an alert is on at any point from 1.0 s
+  to 0.1 s before it starts. The headline counts it only with at least
+  0.5 s of lead, the horizon the labels look ahead: from 0.1 s, a plain
+  |slip| threshold catches every spin, so that rule can't separate
+  methods (see the end of Pipeline below).
+- **False alarm.** An alert with no spin starting between its start and
+  1.0 s after its end.
+- **Operating points.** Each method's thresholds are set on its CV scores
+  for 1 and 0.5 false alarms a minute, then used on the test sessions
+  unchanged. Test recall gets a bootstrap 95% interval, the test spins
+  resampled 1,000 times.
 
 ## Results
 
@@ -133,6 +256,26 @@ Gradient boosting, the models' best CV PR-AUC, on the scored test frames: how fa
   spin 14 peaks at 95° and is driven out of. Counted as misses, the
   spot-check would be 18/20.
 
+## Next steps
+
+- **A live warning in DriftScore.** Run the model inside DriftScore's
+  60 Hz loop, with the features computed incrementally over a 1 s ring
+  buffer and checked against `features.py` on a replayed session.
+  Features and prediction get 16.7 ms a frame. Gradient boosting takes
+  1.5 ms a prediction on the Mac and random forest 3.4 ms on one core,
+  but the loop runs on the AC PC, so it needs timing there.
+- **The 1.0 s horizon:** how much recall a warning twice as early costs.
+  Its dataset is built (`build --horizon 1.0`); `tune` and `final` with
+  `--horizon 1.0` are still to run.
+- **An anomaly detector.** An IsolationForest trained only on driving
+  without spins, against the supervised models: how a factory works when
+  failures are rare and unlabelled.
+- **An unseen car.** Record a second car, train on the S14 and test on
+  the other: does the model carry over to a new machine?
+- **More sessions,** natural ones above all. They would narrow the test
+  intervals, and show whether thresholds set on CV hold their
+  false-alarm rate on new sessions.
+
 ## Setup
 
 Python 3.14, since spinwarn installs driftscore, which requires it. From the
@@ -175,7 +318,7 @@ pip install -e . --no-deps
 pytest
 ```
 
-## Data
+## Pipeline
 
 Raw recordings go in `data/raw/`, which git ignores: the logger's CSV and
 JSON for each session, copied from the AC PC. `notes.md` is the session log.
