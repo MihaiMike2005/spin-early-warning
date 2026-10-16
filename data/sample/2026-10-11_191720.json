@@ -1,0 +1,42 @@
+{
+  "car": "hush_nissan_silvia_s14",
+  "track": "brooklyn park",
+  "ac_version": "1.16.4",
+  "sm_version": "1.7",
+  "date": "2026-10-11",
+  "start_time": "19:17:20",
+  "kind": "natural",
+  "setup": "Step 4 live check",
+  "poll_ms": 1,
+  "python": "3.14.6",
+  "platform": "Windows-11-10.0.26300-SP0",
+  "summary": {
+    "rows": 65719,
+    "duration_s": 197.15,
+    "mean_rows_per_s": 333.3,
+    "packet_id_steps": {
+      "1": 65714,
+      "2": 2,
+      "3+": 0,
+      "reset": 0
+    },
+    "longest_gap_s": 0.006,
+    "breaks": 2,
+    "break_intervals": [
+      {
+        "start_s": 2.383918,
+        "end_s": 2.405482,
+        "statuses": [
+          "PAUSE"
+        ]
+      },
+      {
+        "start_s": 152.630173,
+        "end_s": 157.694459,
+        "statuses": [
+          "PAUSE"
+        ]
+      }
+    ]
+  }
+}

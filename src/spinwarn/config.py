@@ -17,6 +17,10 @@ EXPERIMENTS_PATH = ROOT / "experiments.md"    # one row per CV run
 CHOSEN_PATH = ROOT / "results" / "chosen.json"   # each method's tuned CV run, for the final run
 METRICS_PATH = ROOT / "results" / "metrics.json"   # the final run's results, for report.py
 FINAL_LOCK_PATH = ROOT / "results" / "final.lock"  # written as the final run loads the test sessions
+README_PATH = ROOT / "README.md"              # report.py rewrites its results section
+RESULTS_TABLE_PATH = ROOT / "results" / "results_table.md"   # report.py's tables
+RECALL_FA_PLOT_PATH = ROOT / "results" / "recall_vs_fa.png"  # report.py: every method's CV curve
+IMPORTANCE_PLOT_PATH = ROOT / "results" / "importance.png"   # report.py: the best model's permutation importance
 
 GRID_HZ = 60             # raw packets are resampled onto this uniform grid
 GAP_S = 0.1               # a longer gap starts a new segment

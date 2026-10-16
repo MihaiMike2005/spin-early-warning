@@ -711,6 +711,21 @@ At the 0.5 FA/min threshold:
 
 **Done when:** from a fresh clone, `pytest` passes and `python -m spinwarn.report` regenerates the table, and the README's reproduce commands run end to end with the raw data.
 
+**Results (2026-10-16):** the report, the README's results, `requirements.txt` and `data/sample/` are done; the repo is still private. 41 new tests, 309 in all. `python -m spinwarn.report` takes 2 s and reads only `results/metrics.json`. It writes `results/results_table.md`, both plots and the README's Results section. A test checks that the committed README and table are what it writes from the committed `metrics.json`, so the two can't drift apart.
+
+- **The README's Results** have every method at each CV threshold on test, the headline per kind, each model against B3 and B2 spin by spin, each method's config, PR-AUC and time per prediction, and both plots. The Limitations add Step 14's point that the CV thresholds didn't hold their false-alarm rate on test.
+- **The paired comparison** is the only number not already in `metrics.json`, as Step 14 suggested: each model's headline catches against a baseline's on the same 27 spins, with a bootstrap interval that resamples the spins once for both.
+  - **Against B3,** at the 1 FA/min threshold, rf and hgb each catch 2 spins B3 misses and miss 2 it catches: +0.00 [−0.15, 0.15]. lr is 2 against 3, −0.04 [−0.19, 0.11]. At 0.5 FA/min every model is ahead by 0.56–0.59, and no interval starts below 0.33.
+  - **Against B2,** every model is ahead by 0.30–0.33 at 1 FA/min, with no interval starting below 0.11. At 0.5 FA/min, lr is ahead by 0.19 [0.04, 0.37], and rf and hgb by 0.22 [0.00, 0.44].
+- **Found in review, and fixed:**
+  - **`threshold_for_fa` could set the alarm left on.** For B1, lr and hgb, the lowest CV candidate alarms on every scored frame, each segment one alert, at 1.08 FA/min: every spin caught, and the segments without a spin as the false alarms. The 1 FA/min target is only 0.08 below that, and nothing stopped `threshold_for_fa` from picking it for any target above. The recall plot already started each curve at the threshold with the most false alarms, so for those three methods its caption ("the threshold the final run would set for that rate") was wrong from 1.08 to 3 FA/min. Now `evaluate.warning_range` keeps a curve from that threshold up, and `threshold_for_fa` and the plot both set thresholds from it. No threshold changes: at both targets the picks are the same for all 60 runs in `results/cv/`, the same as the 12 thresholds in `metrics.json`, and the same for B2's 15 values of θ1 at 1 FA/min. So the final run and `experiments.md` stand.
+  - **The importance plot** labelled 3 small negative means "−0.000". A number that rounds to 0 now prints without its sign.
+  - **Reproduce** listed only `build`, `tune` and `report`, and `report` reads the committed `metrics.json`, so the README came out the same whatever `tune` made. It now ends with `final --force --note "reproduce"`. It says that `tune` rewrites `chosen.json` with new run ids and appends to `experiments.md`, and that the forced run logs itself. It also gives the `git checkout` that puts the committed files back.
+  - **Setup** marks the install of the DriftScore checkout as optional: `pip install -e '.[dev]'` alone pulls driftscore from GitHub.
+- **Reproducing:** in a scratch copy of the repo, `tune` for all six methods chose the same params with the same PR-AUC as `results/chosen.json`. `final --force` hasn't been run, since it would score the test sessions a second time.
+- **`requirements.txt`** is the `pip freeze` of the venv that made the results (Python 3.14.5 on macOS), with driftscore pinned to DriftScoreUI commit `2eb2611` and spinwarn left out. **`data/sample/`** is `2026-10-11_191720`, the logger's 3-minute live check on Brooklyn Park, which isn't in the dataset.
+- **Not done:** the repo is still private, and there's no raw-data release, so a reader can run `pytest` and `report` but not the pipeline.
+
 ## Phase C — week 2 (optional)
 
 - **Step 16 — Live warning in DriftScore:**

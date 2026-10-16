@@ -220,14 +220,33 @@ def recall_fa_curve(df, score) -> pd.DataFrame:
     return pd.DataFrame([{"threshold": float(th), **_summary(segments, th)} for th in _candidates(df, score)])
 
 
-def threshold_for_fa(df, score, target) -> float:
-    """The lowest candidate threshold with at most `target` false alarms per minute.
+def warning_range(curve) -> pd.DataFrame:
+    """curve's rows from the threshold with the most false alarms up, lowest first: the ones a threshold is set from.
 
-    The lowest, so the one that alerts most within the target. Every
-    candidate is scanned rather than bisected, since false alarms don't
-    always fall as the threshold rises: one alert can split into two.
+    Below that threshold, alarms run together into fewer and longer alerts,
+    down to the lowest candidate, where every scored frame alarms and each
+    segment is one alert: every spin caught, the alarm left on, and only
+    the segments without a spin as false alarms. That isn't a warning,
+    however few false alarms it gives. On the dev set it's 1.08 FA/min for
+    B1, lr and hgb, just over the 1 FA/min target.
+
+    curve is recall_fa_curve's, or its columns as a dict of lists, as
+    metrics.json keeps them. Of several thresholds tied on the most false
+    alarms, the range starts at the lowest.
     """
-    curve = recall_fa_curve(df, score)
+    curve = pd.DataFrame(curve).sort_values("threshold", kind="stable", ignore_index=True)
+    return curve.iloc[int(np.argmax(curve["fa_per_min"].to_numpy(dtype=float))):]
+
+
+def threshold_for_fa(df, score, target) -> float:
+    """The lowest candidate threshold in the warning range with at most `target` false alarms per minute.
+
+    The lowest, so the one that alerts most within the target; from the
+    warning range only, so never the alarm left on. Every candidate is
+    scanned rather than bisected, since false alarms don't always fall as
+    the threshold rises: one alert can split into two.
+    """
+    curve = warning_range(recall_fa_curve(df, score))
     within = curve.loc[curve["fa_per_min"] <= target, "threshold"]
     if within.empty:
         raise ValueError(f"no threshold keeps to {target} false alarms per minute")

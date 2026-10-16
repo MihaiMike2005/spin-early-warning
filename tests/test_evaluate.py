@@ -227,6 +227,28 @@ def test_threshold_for_fa_is_the_lowest_threshold_within_the_target(target, thre
     assert summary["fa_per_min"] == target and summary["recall"] == 1.0
 
 
+def test_threshold_for_fa_never_leaves_the_alarm_on():
+    # The toy on a floor of 0.1, with its first scored frame at 0. Over 0,
+    # every other scored frame alarms: one alert through the spin, so no
+    # false alarm, within any target. Over 0.1, the six false alarms: the
+    # most of any threshold, so the warning range starts there.
+    df, score = toy()
+    score = np.where(score > 0, score, 0.1)
+    score[60] = 0.0
+    curve = evaluate.recall_fa_curve(df, score)
+    always_on = curve.set_index("threshold").loc[0.0]
+    assert always_on["false_alarms"] == 0 and always_on["time_in_alarm"] > 0.99
+    assert evaluate.warning_range(curve)["threshold"].tolist() == [0.1, 1, 2, 3, 4, 5, 6, 10]
+    assert evaluate.threshold_for_fa(df, score, 1.0) == 4.0
+    assert evaluate.threshold_for_fa(df, score, 10.0) == 0.1
+
+
+def test_warning_range_takes_a_curve_as_metrics_json_keeps_it():
+    # Thresholds out of order, the most false alarms tied at 1 and 3.
+    curve = {"threshold": [3, 0, 5, 1, 4], "fa_per_min": [6.0, 1.1, 0.0, 6.0, 0.8]}
+    assert evaluate.warning_range(curve)["threshold"].tolist() == [1, 3, 4, 5]
+
+
 def test_recall_fa_curve_summarizes_every_candidate_threshold():
     df, score = toy()
     curve = evaluate.recall_fa_curve(df, score)
