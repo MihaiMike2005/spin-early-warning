@@ -2,7 +2,8 @@
 Tests for spinwarn.cv: session-grouped folds, training rows, out-of-fold scores and B2's θ1.
 
 Dataset-like sessions on the GRID_HZ grid with the columns cv reads, and a
-stand-in for Step 13's models, so they run anywhere without data/raw/.
+stand-in model that shows what each fold fits on, so they run anywhere
+without data/raw/.
 """
 
 import numpy as np
@@ -86,7 +87,7 @@ def test_a_baseline_is_scored_out_of_fold_with_nothing_fitted(method, params):
 
 
 class StandIn:
-    """A model, as Step 13's models.make_model will make: remembers what it's fitted on, and scores with its number."""
+    """A model, as models.make_model makes: remembers what it's fitted on, and scores with its number."""
 
     def __init__(self, made):
         self.number = len(made)
@@ -105,8 +106,7 @@ def test_a_model_is_fitted_per_fold_on_the_other_folds_and_scores_its_own(monkey
     ds = dataset()
     made = []
     monkeypatch.setattr(cv, "METHODS", [*cv.METHODS, "stand-in"])
-    # raising=False: models.make_model comes with Step 13.
-    monkeypatch.setattr(models, "make_model", lambda name, params: StandIn(made), raising=False)
+    monkeypatch.setattr(models, "make_model", lambda name, params: StandIn(made))
     scores = cv.oof_scores(ds, "stand-in")
 
     assert len(made) == N_FOLDS
@@ -118,6 +118,36 @@ def test_a_model_is_fitted_per_fold_on_the_other_folds_and_scores_its_own(monkey
         # Every row of its fold, but those with a feature unknown (a segment's first WINDOW_S).
         assert (scores[test][~unknown[test]] == (model.number + 1) / 10).all()
     assert np.isnan(scores[unknown]).all() and not np.isnan(scores[~unknown]).any()
+
+
+@pytest.mark.parametrize("method, params", [
+    ("lr", {"C": 0.1}), ("rf", {"n_estimators": 20}), ("hgb", {"max_leaf_nodes": 15}),
+])
+def test_each_model_scores_every_frame_with_its_features_known_out_of_fold(method, params):
+    ds = dataset(seconds=30.0, onsets=(10.0, 20.0))
+    scores = cv.oof_scores(ds, method, params)
+    unknown = ds[FEATURES].isna().any(axis=1).to_numpy()
+    assert np.isnan(scores[unknown]).all()
+    assert ((scores[~unknown] >= 0) & (scores[~unknown] <= 1)).all()
+    np.testing.assert_allclose(cv.oof_scores(ds, method, params), scores, rtol=0, atol=1e-12)
+
+
+def test_the_methods_are_the_baselines_then_the_models():
+    assert cv.METHODS == ["b1", "b2", "b3", "lr", "rf", "hgb"]
+
+
+@pytest.mark.parametrize("method, params, message", [
+    ("b2", {"C": 1}, r"b2 takes params \['theta1'\]"),
+    ("b1", {}, None),
+    ("lr", {"theta1": 50}, r"lr takes params \['C'\], not \['theta1'\]"),
+    ("hgb", {}, None),
+])
+def test_params_are_checked_as_a_baselines_or_a_models(method, params, message):
+    if message is None:
+        cv.check_params(method, params)
+    else:
+        with pytest.raises(ValueError, match=message):
+            cv.check_params(method, params)
 
 
 def test_an_unknown_method_is_refused():

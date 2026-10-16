@@ -1,0 +1,52 @@
+{
+  "b1": {
+    "run_id": "2026-10-16_123321_b1",
+    "params": {},
+    "chosen_by": "nothing to tune",
+    "pr_auc": 0.4401872175043257
+  },
+  "b2": {
+    "run_id": "2026-10-16_123324_b2",
+    "params": {
+      "theta1": 25
+    },
+    "chosen_by": "θ1 best of 10–80° by recall @ 1 FA/min, lead ≥ 0.5 s",
+    "pr_auc": 0.534676533659027
+  },
+  "b3": {
+    "run_id": "2026-10-16_123325_b3",
+    "params": {},
+    "chosen_by": "nothing to tune",
+    "pr_auc": 0.8384460829770453
+  },
+  "lr": {
+    "run_id": "2026-10-16_123326_lr",
+    "params": {
+      "C": 0.01
+    },
+    "chosen_by": "PR-AUC, best of 4 configs",
+    "pr_auc": 0.873349983859459
+  },
+  "rf": {
+    "run_id": "2026-10-16_123600_rf",
+    "params": {
+      "n_estimators": 200,
+      "min_samples_leaf": 20,
+      "max_features": 0.5,
+      "max_depth": null
+    },
+    "chosen_by": "PR-AUC, best of 15 configs",
+    "pr_auc": 0.8645479269126601
+  },
+  "hgb": {
+    "run_id": "2026-10-16_125616_hgb",
+    "params": {
+      "min_samples_leaf": 50,
+      "max_leaf_nodes": 15,
+      "learning_rate": 0.1,
+      "l2_regularization": 1
+    },
+    "chosen_by": "PR-AUC, best of 15 configs",
+    "pr_auc": 0.9035619375831084
+  }
+}

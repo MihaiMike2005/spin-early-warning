@@ -3,7 +3,8 @@ The command line: build, lock-test, cv, tune, final.
 
     python -m spinwarn.run build [--horizon 1.0]
     python -m spinwarn.run lock-test --sessions A,B
-    python -m spinwarn.run cv --method b1|b2|b3 [--params '{...}'] [--horizon 0.5] [--note "..."]
+    python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--horizon 0.5] [--note "..."]
+    python -m spinwarn.run tune --method b1|b2|b3|lr|rf|hgb [--n 15] [--horizon 0.5] [--note "..."]
 
 build labels every dev session, computes its features and writes them all
 into one table, data/processed/dataset.parquet, one row per grid frame. It
@@ -24,6 +25,14 @@ results/cv/<run id>.parquet and appends a row to experiments.md. b2 without
 --params picks its θ1 first (cv.choose_theta1). The headline is recall at 1
 FA/min with at least MIN_LEAD_S of lead; recall by the Project Plan's rule,
 any catch, comes beside it.
+
+tune makes each method's CV run for the final one and records it in
+results/chosen.json. A model tries --n configs sampled from its grid with
+SEED (models.configs), each one cv run, and keeps the best by PR-AUC, as
+the Project Plan picks models. A baseline has nothing to search: b1 and b3
+run once, and b2 picks its θ1 by the headline, as cv does. --horizon reads
+that horizon's dataset and records into a file of its own, chosen_h1.json
+for 1.0.
 """
 
 import argparse
@@ -35,10 +44,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from spinwarn import baselines, cv, data
+from spinwarn import baselines, cv, data, models
 from spinwarn.config import (
-    CV_DIR, DATASET_PATH, EXPERIMENTS_PATH, GRID_HZ, HORIZON_S, MIN_LEAD_S, MIN_SPEED_KMH, N_FOLDS,
-    RAW_DIR, REARM_DEG, REARM_S, REVERSE_GEAR, SPIN_HOLD_S, SPLITS_PATH, WINDOW_S,
+    CHOSEN_PATH, CV_DIR, DATASET_PATH, EXPERIMENTS_PATH, GRID_HZ, HORIZON_S, MIN_LEAD_S, MIN_SPEED_KMH,
+    N_FOLDS, N_TUNE, RAW_DIR, REARM_DEG, REARM_S, REVERSE_GEAR, SPIN_HOLD_S, SPLITS_PATH, WINDOW_S,
 )
 from spinwarn.data import dev_sessions, list_sessions, load_session
 from spinwarn.features import FEATURES, make_features
@@ -58,11 +67,21 @@ EXPERIMENT_COLUMNS = ["Date", "Run", "Method", "Horizon (s)", "Features", "Param
                       f"Recall @ 1 FA/min, lead ≥ {MIN_LEAD_S:g} s", "Recall @ 1 FA/min", "Note"]
 
 
+def at_horizon(path, horizon) -> Path:
+    """path itself at HORIZON_S, else the file beside it for horizon: dataset_h1.parquet for 1.0."""
+    if horizon == HORIZON_S:
+        return path
+    return path.with_name(f"{path.stem}_h{horizon:g}{path.suffix}")
+
+
 def dataset_path(horizon) -> Path:
     """Where build writes the dataset labelled at horizon: DATASET_PATH at HORIZON_S, else beside it."""
-    if horizon == HORIZON_S:
-        return DATASET_PATH
-    return DATASET_PATH.with_name(f"{DATASET_PATH.stem}_h{horizon:g}{DATASET_PATH.suffix}")
+    return at_horizon(DATASET_PATH, horizon)
+
+
+def chosen_path(horizon) -> Path:
+    """Where tune records the chosen runs at horizon: CHOSEN_PATH at HORIZON_S, else beside it."""
+    return at_horizon(CHOSEN_PATH, horizon)
 
 
 def _command(name, horizon) -> str:
@@ -176,6 +195,17 @@ def parse_horizon(text) -> float:
     return horizon
 
 
+def parse_n(text) -> int:
+    """argparse type for tune's --n: a whole number of configs, 1 or more."""
+    try:
+        n = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{n} configs: tune needs at least 1")
+    return n
+
+
 def parse_params(text) -> dict:
     """argparse type for --params: a JSON object."""
     try:
@@ -255,13 +285,61 @@ def report(metrics) -> list:
     """What cv prints: PR-AUC, then each operating point, its headline recall first."""
     lines = [f"PR-AUC {metrics['pr_auc']:.3f}"]
     for p in metrics["operating_points"]:
-        lines.append(f"at {p['fa_target']:g} FA/min (threshold {p['threshold']:.4g}): "
-                     f"recall with ≥ {MIN_LEAD_S:g} s lead {p['recall_min_lead']:.2f} "
-                     f"({p['caught_min_lead']}/{p['n_spins']}), "
-                     f"any lead {p['recall']:.2f} ({p['caught']}/{p['n_spins']}), {p['fa_per_min']:.2f} FA/min, "
-                     f"alert precision {p['alert_precision']:.2f}, time in alarm {p['time_in_alarm']:.1%}, "
-                     f"median lead {p['median_lead']:.2f} s")
+        lines.append(f"at {p['fa_target']:g} FA/min (threshold {p['threshold']:.4g}): {headline(p)}, "
+                     f"{p['fa_per_min']:.2f} FA/min, alert precision {p['alert_precision']:.2f}, "
+                     f"time in alarm {p['time_in_alarm']:.1%}, median lead {p['median_lead']:.2f} s")
     return lines
+
+
+def headline(point) -> str:
+    """An operating point's two recalls, the headline first, for one line."""
+    return (f"recall with ≥ {MIN_LEAD_S:g} s lead {point['recall_min_lead']:.2f} "
+            f"({point['caught_min_lead']}/{point['n_spins']}), "
+            f"any lead {point['recall']:.2f} ({point['caught']}/{point['n_spins']})")
+
+
+def save_run(dataset, method, params, horizon, note) -> dict:
+    """One CV run of method with params: its out-of-fold scores saved in CV_DIR, and its row in experiments.md.
+
+    Returns the run: run_id, date, method, params, horizon, note and metrics.
+    """
+    scores = cv.oof_scores(dataset, method, params)
+    now = datetime.now()
+    run = {
+        "run_id": new_run_id(method, horizon, now), "date": f"{now:%Y-%m-%d}", "method": method,
+        "params": params, "horizon": horizon, "note": note, "metrics": cv.metrics(dataset, scores),
+    }
+    write_parquet(oof_table(dataset, scores, run), CV_DIR / f"{run['run_id']}.parquet")
+    append_experiment(experiment_row(run))
+    return run
+
+
+def choose_b2(dataset) -> tuple:
+    """(params, note): B2's θ1 from cv.choose_theta1, with its sweep printed, and the note that says how it was picked."""
+    theta1, table = cv.choose_theta1(dataset)
+    print(f"B2's θ1, by recall with ≥ {MIN_LEAD_S:g} s lead at 1 FA/min (ties by any-lead recall, "
+          "then PR-AUC):")
+    for row in table.itertuples():
+        print(f"  θ1 {row.theta1}°: {headline(row._asdict())}, {row.fa_per_min:.2f} FA/min, PR-AUC {row.pr_auc:.3f}")
+    print(f"θ1 = {theta1}°\n")
+    return {"theta1": theta1}, (f"θ1 best of {table['theta1'].iloc[0]}–{table['theta1'].iloc[-1]}° "
+                                f"by recall @ 1 FA/min, lead ≥ {MIN_LEAD_S:g} s")
+
+
+def _load_for(horizon, error) -> pd.DataFrame:
+    """load_dataset(horizon), or the parser's error saying why not."""
+    try:
+        return load_dataset(horizon)
+    except (FileNotFoundError, RuntimeError) as e:
+        error(str(e))
+
+
+def _scored_on(dataset, horizon) -> str:
+    """What a CV run of the dataset covers, for the line before its numbers."""
+    spins = int(dataset["onset"].sum())
+    minutes = (~dataset["excluded"]).sum() / GRID_HZ / 60
+    return (f"horizon {horizon:g} s, {N_FOLDS}-fold CV over {len(dataset.attrs['sessions'])} dev sessions: "
+            f"{spins} spins in {minutes:.1f} scored min")
 
 
 def cross_validate(method, params, horizon, note, error):
@@ -269,54 +347,78 @@ def cross_validate(method, params, horizon, note, error):
 
     error is the cv parser's, for a mistake on the command line.
     """
-    # b2 with no params picks its θ1 first; anything else has to be complete.
+    # b2 with no params picks its θ1 first; anything else is checked before the dataset loads.
     sweep = method == "b2" and not params
     if not sweep:
         try:
-            baselines.check_params(method, params)
+            cv.check_params(method, params)
         except ValueError as e:
             error(str(e))
-    try:
-        dataset = load_dataset(horizon)
-    except (FileNotFoundError, RuntimeError) as e:
-        error(str(e))
+    dataset = _load_for(horizon, error)
 
     if sweep:
-        theta1, table = cv.choose_theta1(dataset)
-        print(f"B2's θ1, by recall with ≥ {MIN_LEAD_S:g} s lead at 1 FA/min (ties by any-lead recall, "
-              "then PR-AUC):")
-        for row in table.itertuples():
-            print(f"  θ1 {row.theta1}°: recall with ≥ {MIN_LEAD_S:g} s lead {row.recall_min_lead:.2f} "
-                  f"({row.caught_min_lead}/{row.n_spins}), any lead {row.recall:.2f} ({row.caught}/{row.n_spins}), "
-                  f"{row.fa_per_min:.2f} FA/min, PR-AUC {row.pr_auc:.3f}")
-        print(f"θ1 = {theta1}°\n")
-        params = {"theta1": theta1}
-        swept = (f"θ1 best of {table['theta1'].iloc[0]}–{table['theta1'].iloc[-1]}° "
-                 f"by recall @ 1 FA/min, lead ≥ {MIN_LEAD_S:g} s")
+        params, swept = choose_b2(dataset)
         note = "; ".join(filter(None, [swept, note]))
+    run = save_run(dataset, method, params, horizon, note)
 
-    scores = cv.oof_scores(dataset, method, params)
-    now = datetime.now()
-    run = {
-        "run_id": new_run_id(method, horizon, now), "date": f"{now:%Y-%m-%d}", "method": method,
-        "params": params, "horizon": horizon, "note": note, "metrics": cv.metrics(dataset, scores),
-    }
-    path = CV_DIR / f"{run['run_id']}.parquet"
-    write_parquet(oof_table(dataset, scores, run), path)
-    append_experiment(experiment_row(run))
-
-    at_1 = run["metrics"]["operating_points"][0]
-    print(f"{method} {json.dumps(params)} at horizon {horizon:g} s, {N_FOLDS}-fold CV over "
-          f"{len(dataset.attrs['sessions'])} dev sessions: {at_1['n_spins']} spins in "
-          f"{at_1['minutes']:.1f} scored min")
+    print(f"{method} {json.dumps(params)} at {_scored_on(dataset, horizon)}")
     print("\n".join(report(run["metrics"])))
-    print(f"\nwrote {path} and a row in {EXPERIMENTS_PATH.name}")
+    print(f"\nwrote {CV_DIR / run['run_id']}.parquet and a row in {EXPERIMENTS_PATH.name}")
+
+
+def record_chosen(path, method, entry):
+    """entry as method's chosen run in the JSON file at path, the other methods' left as they are, in METHODS order."""
+    chosen = json.loads(path.read_text()) if path.exists() else {}
+    chosen[method] = entry
+    chosen = {m: chosen[m] for m in cv.METHODS if m in chosen} | chosen
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{path.name}.partial")
+    partial.write_text(json.dumps(chosen, indent=2, ensure_ascii=False) + "\n")   # b2's θ1 as θ, not θ
+    partial.replace(path)
+
+
+def tune(method, n, horizon, note, error):
+    """run.py tune: CV runs of method's configs, each logged as cv logs it, and the chosen one recorded.
+
+    A model tries n configs from models.configs and keeps the best by
+    PR-AUC; ties go to the one tried first. b1 and b3 have nothing to tune
+    and run once; b2 picks its θ1 by the headline, as cv does. note goes on
+    every run's row, after the tune's own. error is the tune parser's.
+    """
+    dataset = _load_for(horizon, error)
+    print(f"tuning {method} at {_scored_on(dataset, horizon)}")
+    if method in models.MODELS:
+        trials = models.configs(method, n)
+        notes = [f"tune {k}/{len(trials)}" for k in range(1, len(trials) + 1)]
+        chosen_by = f"PR-AUC, best of {len(trials)} configs"
+    elif method == "b2":
+        params, swept = choose_b2(dataset)
+        trials, notes, chosen_by = [params], [f"{swept}; tune"], swept
+    else:
+        trials, notes, chosen_by = [{}], ["tune"], "nothing to tune"
+
+    runs = []
+    for k, (params, own) in enumerate(zip(trials, notes), start=1):
+        run = save_run(dataset, method, params, horizon, "; ".join(filter(None, [own, note])))
+        runs.append(run)
+        print(f"  {k}/{len(trials)} {json.dumps(params)}: PR-AUC {run['metrics']['pr_auc']:.3f}, at 1 FA/min "
+              f"{headline(run['metrics']['operating_points'][0])}  [{run['run_id']}]")
+    # max keeps the first of equals: the config tried first.
+    best = max(runs, key=lambda r: r["metrics"]["pr_auc"])
+    path = chosen_path(horizon)
+    record_chosen(path, method, {"run_id": best["run_id"], "params": best["params"], "chosen_by": chosen_by,
+                                 "pr_auc": best["metrics"]["pr_auc"]})
+
+    print(f"\nchosen: {method} {json.dumps(best['params'])}, run {best['run_id']}")
+    print("\n".join(report(best["metrics"])))
+    print(f"\nwrote {len(runs)} run{'s' * (len(runs) > 1)} to {CV_DIR} and {EXPERIMENTS_PATH.name}, "
+          f"and {method}'s chosen run to {path}")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="python -m spinwarn.run",
-        description="Build the dataset, lock the test sessions, run CV, and (later steps) tuning and the final test.",
+        description="Build the dataset, lock the test sessions, run CV and tune, and (Step 14) the final test.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build", help="label every dev session, compute its features and write "
@@ -332,12 +434,23 @@ def main(argv=None):
                                                "scores in results/cv/ and log the run in experiments.md")
     cv_parser.add_argument("--method", choices=cv.METHODS, required=True)
     cv_parser.add_argument("--params", type=parse_params, default={},
-                           help="""the method's params as a JSON object, e.g. '{"theta1": 50}' for b2; """
-                                "b2 without them picks the θ1 with the best CV recall at 1 FA/min "
-                                f"with at least {MIN_LEAD_S:g} s of lead")
+                           help="""the method's params as a JSON object, e.g. '{"theta1": 50}' for b2 or """
+                                """'{"C": 0.1}' for lr; b2 without them picks the θ1 with the best CV recall """
+                                f"at 1 FA/min with at least {MIN_LEAD_S:g} s of lead; a model without them "
+                                "takes scikit-learn's defaults")
     cv_parser.add_argument("--horizon", type=parse_horizon, default=HORIZON_S,
                            help=f"the dataset's horizon, as built (default {HORIZON_S:g})")
     cv_parser.add_argument("--note", default="", help="one line for experiments.md")
+    tune_parser = commands.add_parser("tune", help="CV-run a method's configs, each saved and logged as cv "
+                                                   "does, and record the best in results/chosen.json")
+    tune_parser.add_argument("--method", choices=cv.METHODS, required=True)
+    tune_parser.add_argument("--n", type=parse_n, default=N_TUNE,
+                             help=f"configs a model tries, sampled from its grid with a fixed seed (default "
+                                  f"{N_TUNE}; the whole grid if it's smaller); a baseline runs once")
+    tune_parser.add_argument("--horizon", type=parse_horizon, default=HORIZON_S,
+                             help=f"the dataset's horizon, as built (default {HORIZON_S:g}); another horizon "
+                                  "records into a file of its own, e.g. chosen_h1.json for 1.0")
+    tune_parser.add_argument("--note", default="", help="one line for every run's row in experiments.md")
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -360,8 +473,10 @@ def main(argv=None):
             lock.error(str(error))
         print(f"locked {', '.join(sorted(args.sessions))} as the test sessions in {SPLITS_PATH}.\n"
               "Commit it, then run `python -m spinwarn.run build` again to leave them out of the dataset.")
-    else:
+    elif args.command == "cv":
         cross_validate(args.method, args.params, args.horizon, args.note, cv_parser.error)
+    else:
+        tune(args.method, args.n, args.horizon, args.note, tune_parser.error)
 
 
 if __name__ == "__main__":

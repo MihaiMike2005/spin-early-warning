@@ -579,6 +579,35 @@ python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--hori
 
 **Done when:** `chosen.json` has a config for every method and `experiments.md` has every run.
 
+**Results (2026-10-16):** done. 51 new tests, 245 in all. `tune` ran every method on the dev set, 58 spins in 46.3 scored min: lr's whole grid (4 configs) in 2 s, and 15 configs each for hgb in 109 s and rf in 116 s. `results/chosen.json` has all six methods, each run matching the current dataset, and every run is in `experiments.md`.
+
+| Method | Chosen config | PR-AUC | @ 1 FA/min: recall, lead ≥ 0.5 s | Recall, any lead | Time in alarm | Median lead (s) | @ 0.5 FA/min: recall, lead ≥ 0.5 s | Recall, any lead | Median lead (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| B1: \|slip\| | | 0.440 | 0.17 (10/58) | 1.00 (58/58) | 1.9% | 0.28 | 0.09 (5/58) | 0.95 (55/58) | 0.22 |
+| B2 | θ1 = 25° | 0.535 | 0.72 (42/58) | 0.81 (47/58) | 1.2% | 0.72 | 0.64 (37/58) | 0.78 (45/58) | 0.63 |
+| B3: time to 90° | | 0.838 | 0.78 (45/58) | 0.98 (57/58) | 2.0% | 0.58 | 0.34 (20/58) | 0.98 (57/58) | 0.42 |
+| Logistic regression | C = 0.01 | 0.873 | 0.83 (48/58) | 1.00 (58/58) | 2.0% | 0.62 | 0.57 (33/58) | 0.97 (56/58) | 0.53 |
+| Random forest | 200 trees, depth unlimited, min leaf 20, max features 0.5 | 0.865 | 0.88 (51/58) | 0.98 (57/58) | 2.1% | 0.65 | 0.66 (38/58) | 0.98 (57/58) | 0.55 |
+| Gradient boosting | learning rate 0.1, 15 leaves, min leaf 50, L2 1 | 0.904 | 0.86 (50/58) | 0.98 (57/58) | 1.9% | 0.65 | 0.60 (35/58) | 0.97 (56/58) | 0.55 |
+
+- **On CV, every model beats B3,** on PR-AUC and on the headline at 1 FA/min, by 3–6 spins. At 0.5 FA/min only rf beats B2, by one spin; hgb (35) and lr (33) don't. One spin is 1.7 points of recall, and these numbers lean optimistic: configs and thresholds are picked on the same CV scores they're reported on. Step 14's test sessions are the unbiased ones.
+- **The headline barely separates configs.** At 1 FA/min hgb's 15 catch 45–50, and 8 of rf's 15 tie on 51. Tuning picks by PR-AUC, as the Project Plan says. It ranks every scored frame, where the headline turns on a few of 58 spins. hgb's pick also has the best headline of its 15.
+- **Choices the plan left open:**
+  - `tune` takes the baselines too, so `chosen.json` holds a CV run for every method Step 14 scores. b1 and b3 have nothing to tune and run once; b2 picks θ1 by the headline, as `cv` does since Step 12. Their numbers are Step 12's exactly, in new runs noted "tune".
+  - **The search:** scikit-learn's `ParameterSampler` with `SEED`, without replacement. An `--n` over the grid's size runs the whole grid, as for lr's 4. Each config is one `cv` run, saved and logged with the note "tune k/n", plus `--note` if given; a PR-AUC tie goes to the config tried first. `--n` defaults to `N_TUNE` = 15, new in `config.py`.
+  - **`chosen.json`** (`CHOSEN_PATH`, new in `config.py`) has, per method, the run id, params, how it was chosen and its PR-AUC, in method order. Tuning a method again replaces only its entry. `tune --horizon 1.0` reads `dataset_h1.parquet` and writes `chosen_h1.json`, as `build` and Step 14 name their files.
+  - **Params:** a model takes any of its grid's params, so `cv --method rf --params '{"max_depth": 10}'` works, and nothing else, refused before the dataset loads. Their values are scikit-learn's to check: it refuses a bad one at the first fit, before anything is written. With no params, a model takes scikit-learn's defaults.
+  - **lr reads `rear_slip_mean` and `rear_slip_slope` through a signed log,** as Step 9 suggested. On CV it makes no difference: at C = 0.1, PR-AUC 0.866 with it and 0.868 without, headline 50 and 51. That comparison was a scratch check outside `run.py cv`, so it has no row in `experiments.md`. It's kept for frames beyond the training range: the dev set's scored frames reach 1.55e7 on the slope, and Step 9 saw 2.7e8 on Sunday's sessions. Without the log, StandardScaler would put such a frame thousands of SDs out and it would score 0 or 1; with it, about 10 (tested). The log takes an array of `FEATURES` rows too, by position, as Step 14's single-row timing or Step 16's live loop may pass: every model scores an array the same as the frame it was fitted on, with scikit-learn's warning about feature names (tested).
+  - **lr's C is at its grid's edge,** 0.01, with PR-AUC rising as C falls (0.857, 0.860, 0.866, 0.873). One `cv` run at 0.001 gives 0.864, so 0.01 is the peak and the grid stays. It's in `experiments.md`, not in `chosen.json`.
+  - **rf's min leaf is at its grid's edge too,** 20, and all 7 rf configs with it tie on the best headline, 51; nothing above 20 was tried, since a model tuned short of its best can only flatter the baselines, not itself.
+  - **hgb runs without early stopping** (`early_stopping=False`). scikit-learn's default turns it on above 10,000 training rows, as every fold has, and holds out 10% of the fold's training frames to judge it. In the first tune it never stopped: on every fold the chosen config ran all 100 of `max_iter`, as did the 0.03 learning-rate configs. So it only cost frames, and Step 14's refit would have trained on 90% of the dev set. Off, hgb was tuned again, noted in `experiments.md`, where the first 15 runs stay. PR-AUC rose on 11 of the 15 configs, and the pick went from min leaf 200 (0.888, 49/58) to min leaf 50 (0.904, 50/58); at 0.5 FA/min it fell from 38 to 35.
+  - The 0.03 learning-rate configs still score lowest (0.835–0.859). With `max_iter` at its default 100 rounds, outside the grid, they may be undertrained. Untested.
+  - `cv.check_params` checks a baseline's params or a model's, for `run.py cv`.
+- **For Step 14:**
+  - The chosen runs' scores are in `results/cv/`, which git ignores, so a fresh clone has `chosen.json` but not what Step 14 sets thresholds from. `tune` is seeded, so rerunning it reproduces them.
+  - Check each chosen run's `sessions` and `built_with` against the dataset before using it, as `load_dataset()` does. All six match today.
+  - rf has `n_jobs=-1`, so a single-row `predict_proba` starts threads for every call. Time per prediction should probably be measured with `n_jobs=1` too, the way a live 60 Hz loop would run it.
+
 ### Step 14 — Final test run
 
 `python -m spinwarn.run final` runs once, for every method:

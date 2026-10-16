@@ -94,7 +94,7 @@ file of its own beside the main one: `dataset_h1.parquet` for 1.0 s. It
 remembers its horizon, and is refused and rebuilt like the main one.
 
 ```
-python -m spinwarn.run cv --method b1|b2|b3 [--params '{...}'] [--horizon 0.5] [--note "..."]
+python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--horizon 0.5] [--note "..."]
 ```
 
 scores every dev frame with a method that never saw its session (4-fold
@@ -104,6 +104,25 @@ the scores to `results/cv/<run>.parquet` and appends a row to
 `experiments.md`. B2 without `--params` first picks its |slip| gate θ1
 from 10–80° by the headline below; `--params '{"theta1": 50}'` fixes it.
 `--horizon 1.0` reads the table `build --horizon 1.0` wrote.
+
+The models are logistic regression (`lr`), random forest (`rf`) and
+gradient boosting (`hgb`), class-weighted for the rare spins and seeded.
+Each fold's model fits on the other folds' scored frames, thinned to
+20 Hz, and reads every feature. Logistic regression reads rear wheel slip
+through a signed log, since it spikes to 1e5 and more, which would swamp
+its scaling. `--params '{"C": 0.1}'` sets a model's params; without them
+it takes scikit-learn's defaults.
+
+```
+python -m spinwarn.run tune --method b1|b2|b3|lr|rf|hgb [--n 15] [--horizon 0.5]
+```
+
+makes each method's CV run for the final test and records it in
+`results/chosen.json`. A model tries `--n` configs sampled from its grid
+with a fixed seed, each one `cv` run, saved and logged as `cv` does, and
+keeps the best by PR-AUC. A baseline runs once: b1 and b3 have nothing to
+tune, and b2 picks θ1 by the headline, as `cv` does. `--horizon 1.0` reads
+that horizon's table and records into `results/chosen_h1.json`.
 
 The headline is recall at 1 FA/min counting only spins warned of at least
 0.5 s ahead, the horizon the labels look. Recall by the Project Plan's
@@ -131,5 +150,6 @@ and 22 false.
 | `src/spinwarn/` | The pipeline: load, label, features, models, evaluation |
 | `notebooks/01_explore.ipynb` | Rate and gaps, slip with onsets, the countersteer sign, every spin |
 | `results/cv/` | Out-of-fold scores, one file per CV run (gitignored) |
+| `results/chosen.json` | Each method's tuned CV run, for the final test |
 | `notes.md` | Session log: car, track, setup, minutes, spins, kind, video |
 | `experiments.md` | One row per CV run |

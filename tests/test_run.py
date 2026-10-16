@@ -1,5 +1,5 @@
 """
-Tests for spinwarn.run: the dataset build, its staleness check, the test lock and cv.
+Tests for spinwarn.run: the dataset build, its staleness check, the test lock, cv and tune.
 
 Synthetic grid sessions with every column labels and features read, and the
 paths and session lists swapped for tmp_path ones, so they run anywhere
@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from spinwarn import cv, evaluate, run
+from spinwarn import cv, evaluate, models, run
 from spinwarn.config import EXPERIMENTS_PATH, GRID_HZ, N_FOLDS
 from spinwarn.features import FEATURES, INPUTS, make_features
 from spinwarn.labeling import label
@@ -45,6 +45,7 @@ def sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "SPLITS_PATH", tmp_path / "splits.json")
     monkeypatch.setattr(run, "CV_DIR", tmp_path / "cv")
     monkeypatch.setattr(run, "EXPERIMENTS_PATH", tmp_path / "experiments.md")
+    monkeypatch.setattr(run, "CHOSEN_PATH", tmp_path / "results" / "chosen.json")
     monkeypatch.setattr(run, "list_sessions", lambda: list(state["all"]))
     monkeypatch.setattr(run, "dev_sessions", lambda: list(state["dev"]))
 
@@ -188,9 +189,14 @@ def cv_ready(sessions, *build_args):
     run.main(["build", *build_args])
 
 
+def cells(line):
+    """The cells of a row of a Markdown table."""
+    return [cell.strip() for cell in line.strip("|").split(" | ")]
+
+
 def last_row(path):
     """The cells of the last row of a Markdown table file."""
-    return [cell.strip() for cell in path.read_text().splitlines()[-1].strip("|").split(" | ")]
+    return cells(path.read_text().splitlines()[-1])
 
 
 def test_cv_saves_out_of_fold_scores_and_appends_a_row_to_experiments(sessions, capsys):
@@ -261,10 +267,26 @@ def test_cv_at_another_horizon_reads_its_dataset(sessions, capsys):
     assert last_row(run.EXPERIMENTS_PATH)[2:5] == ["b3", "1", "`time_to_90`"]
 
 
+def test_cv_fits_a_model_per_fold_with_its_params(sessions, capsys):
+    cv_ready(sessions)
+    run.main(["cv", "--method", "lr", "--params", '{"C": 0.1}'])
+    out = capsys.readouterr().out
+
+    (path,) = run.CV_DIR.glob("*.parquet")
+    oof = pd.read_parquet(path)
+    dataset = run.load_dataset()
+    np.testing.assert_allclose(oof["score"], cv.oof_scores(dataset, "lr", {"C": 0.1}))
+    assert path.stem.endswith("_lr") and oof.attrs["params"] == {"C": 0.1}
+    assert 'lr {"C": 0.1} at horizon 0.5 s' in out and "3 spins" in out
+    assert last_row(run.EXPERIMENTS_PATH)[2:6] == ["lr", "0.5", f"`FEATURES` ({len(FEATURES)})", '`{"C": 0.1}`']
+
+
 @pytest.mark.parametrize("argv, message", [
     (["--method", "b1", "--params", '{"theta1": 50}'], "b1 takes params [], not ['theta1']"),
     (["--method", "b2", "--params", '{"theta2": 1}'], "b2 takes params ['theta1'], not ['theta2']"),
     (["--method", "b2", "--params", '{"theta1": "50"}'], "b2's theta1 is a number"),
+    (["--method", "rf", "--params", '{"max_dept": 5}'], "rf takes params ["),
+    (["--method", "lr", "--params", '{"C": true}'], "lr's C is a number, a string or null, not True"),
     (["--method", "b2", "--params", "[50]"], "not a JSON object"),
     (["--method", "b2", "--params", "{theta1: 50}"], "not JSON"),
     (["--method", "xgb"], "invalid choice: 'xgb'"),
@@ -294,6 +316,135 @@ def test_run_ids_never_clash(sessions):
     (run.CV_DIR / "2026-10-15_143012_b1.parquet").touch()
     (run.CV_DIR / "2026-10-15_143012_b1_2.parquet").touch()
     assert run.new_run_id("b1", 0.5, now) == "2026-10-15_143012_b1_3"
+
+
+def test_cv_with_a_value_scikit_learn_refuses_writes_nothing(sessions):
+    cv_ready(sessions)
+    with pytest.raises(ValueError, match="'C' parameter"):
+        run.main(["cv", "--method", "lr", "--params", '{"C": -1}'])
+    assert not run.CV_DIR.exists() and not run.EXPERIMENTS_PATH.exists()
+
+
+# --- tune -------------------------------------------------------------------------
+
+def chosen(horizon=0.5):
+    return json.loads(run.chosen_path(horizon).read_text())
+
+
+def test_tune_runs_each_config_and_records_the_best_by_pr_auc(sessions, capsys):
+    cv_ready(sessions)
+    capsys.readouterr()
+    run.main(["tune", "--method", "lr", "--n", "15"])
+    out = capsys.readouterr().out
+
+    # lr's grid has 4 configs, so --n 15 runs all 4, in models.configs' order.
+    runs = sorted(run.CV_DIR.glob("*.parquet"))
+    assert len(runs) == 4
+    oofs = [pd.read_parquet(path).attrs for path in runs]
+    assert [r["params"] for r in oofs] == models.configs("lr", 15)
+    rows = [cells(line) for line in run.EXPERIMENTS_PATH.read_text().splitlines()[2:]]
+    assert [row[-1] for row in rows] == ["tune 1/4", "tune 2/4", "tune 3/4", "tune 4/4"]
+    assert [row[1] for row in rows] == [f"`{r['run_id']}`" for r in oofs]
+
+    best = max(oofs, key=lambda r: r["metrics"]["pr_auc"])
+    assert chosen() == {"lr": {"run_id": best["run_id"], "params": best["params"],
+                               "chosen_by": "PR-AUC, best of 4 configs", "pr_auc": best["metrics"]["pr_auc"]}}
+    assert f"chosen: lr {json.dumps(best['params'])}, run {best['run_id']}" in out
+    assert out.count("/4 {") == 4 and "at 0.5 FA/min" in out
+
+
+def test_tune_tries_n_configs_sampled_with_the_seed(sessions):
+    cv_ready(sessions)
+    run.main(["tune", "--method", "lr", "--n", "2"])
+    params = [pd.read_parquet(path).attrs["params"] for path in sorted(run.CV_DIR.glob("*.parquet"))]
+    assert params == models.configs("lr", 2) and len(params) == 2
+    assert chosen()["lr"]["chosen_by"] == "PR-AUC, best of 2 configs"
+
+
+def test_tunes_note_goes_on_every_runs_row_after_its_own(sessions):
+    cv_ready(sessions)
+    run.main(["tune", "--method", "lr", "--n", "2", "--note", "again | fixed"])
+    run.main(["tune", "--method", "b1", "--note", "again"])
+    notes = [cells(line)[-1] for line in run.EXPERIMENTS_PATH.read_text().splitlines()[2:]]
+    assert notes == [r"tune 1/2; again \| fixed", r"tune 2/2; again \| fixed", "tune; again"]
+    assert pd.read_parquet(min(run.CV_DIR.glob("*_lr.parquet"))).attrs["note"] == "tune 1/2; again | fixed"
+
+
+def test_a_tie_on_pr_auc_goes_to_the_config_tried_first(sessions, monkeypatch):
+    # Every config scores alike when the model ignores its params.
+    make_model = models.make_model
+    monkeypatch.setattr(models, "make_model", lambda name, params: make_model(name, {}))
+    cv_ready(sessions)
+    run.main(["tune", "--method", "lr", "--n", "3"])
+    first = pd.read_parquet(min(run.CV_DIR.glob("*.parquet"))).attrs
+    assert chosen()["lr"]["run_id"] == first["run_id"] and chosen()["lr"]["params"] == models.configs("lr", 3)[0]
+
+
+@pytest.mark.parametrize("method", ["b1", "b3"])
+def test_tune_runs_a_baseline_with_nothing_to_tune_once(sessions, capsys, method):
+    cv_ready(sessions)
+    run.main(["tune", "--method", method, "--n", "15"])
+    (path,) = run.CV_DIR.glob("*.parquet")
+    assert chosen() == {method: {"run_id": path.stem, "params": {}, "chosen_by": "nothing to tune",
+                                 "pr_auc": pd.read_parquet(path).attrs["metrics"]["pr_auc"]}}
+    assert last_row(run.EXPERIMENTS_PATH)[-1] == "tune"
+    assert "1/1 {}" in capsys.readouterr().out
+
+
+def test_tune_b2_picks_theta1_by_the_headline_as_cv_does(sessions, capsys, monkeypatch):
+    monkeypatch.setattr(cv, "B2_THETA1_DEG", (10, 15))
+    cv_ready(sessions)
+    run.main(["tune", "--method", "b2"])
+    (path,) = run.CV_DIR.glob("*.parquet")
+    swept = "θ1 best of 10–15° by recall @ 1 FA/min, lead ≥ 0.5 s"
+    assert chosen()["b2"] == {"run_id": path.stem, "params": {"theta1": 10}, "chosen_by": swept,
+                              "pr_auc": pd.read_parquet(path).attrs["metrics"]["pr_auc"]}
+    assert last_row(run.EXPERIMENTS_PATH)[-1] == f"{swept}; tune"
+    assert "θ1 = 10°" in capsys.readouterr().out
+    assert swept in run.CHOSEN_PATH.read_text()   # readable, not \u escapes
+
+
+def test_tune_keeps_the_other_methods_and_replaces_its_own(sessions):
+    cv_ready(sessions)
+    run.main(["tune", "--method", "lr", "--n", "1"])
+    run.main(["tune", "--method", "b3"])
+    first_lr = chosen()["lr"]
+    assert list(chosen()) == ["b3", "lr"]    # in METHODS order
+
+    run.main(["tune", "--method", "lr", "--n", "2"])
+    assert list(chosen()) == ["b3", "lr"] and chosen()["lr"]["chosen_by"] == "PR-AUC, best of 2 configs"
+    assert chosen()["lr"]["run_id"] != first_lr["run_id"]
+
+
+def test_tune_at_another_horizon_records_into_a_file_of_its_own(sessions):
+    cv_ready(sessions, "--horizon", "1")
+    run.main(["tune", "--method", "b1", "--horizon", "1"])
+    assert run.chosen_path(1.0).name == "chosen_h1.json" and not run.CHOSEN_PATH.exists()
+    (path,) = run.CV_DIR.glob("*.parquet")
+    assert path.stem.endswith("_b1_h1") and chosen(1.0)["b1"]["run_id"] == path.stem
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--method", "lr", "--n", "0"], "argument --n: 0 configs"),
+    (["--method", "lr", "--n", "-3"], "argument --n: -3 configs"),
+    (["--method", "lr", "--n", "two"], "not a whole number: 'two'"),
+    (["--method", "xgb"], "invalid choice: 'xgb'"),
+    (["--n", "3"], "required: --method"),
+    (["--method", "b1", "--horizon", "1"], "run `python -m spinwarn.run build --horizon 1` first"),
+])
+def test_tune_refuses_and_writes_nothing(sessions, capsys, argv, message):
+    cv_ready(sessions)
+    with pytest.raises(SystemExit):
+        run.main(["tune", *argv])
+    assert message in capsys.readouterr().err
+    assert not run.CV_DIR.exists() and not run.EXPERIMENTS_PATH.exists() and not run.CHOSEN_PATH.exists()
+
+
+def test_tune_before_the_lock_is_refused(sessions, capsys):
+    run.main(["build"])
+    with pytest.raises(SystemExit):
+        run.main(["tune", "--method", "lr"])
+    assert "no test sessions locked" in capsys.readouterr().err
 
 
 def test_the_repos_experiments_md_has_the_columns_cv_writes():

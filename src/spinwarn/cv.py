@@ -10,6 +10,7 @@ is scored the same way.
 
 metrics turns the scores into what run.py cv prints and logs: PR-AUC, and
 each FA_TARGETS operating point, with its threshold set on the same scores.
+The methods are the baselines (b1, b2, b3) and the models (lr, rf, hgb).
 """
 
 import numpy as np
@@ -23,7 +24,15 @@ from spinwarn.evaluate import pr_auc, summarize, threshold_for_fa
 from spinwarn.features import FEATURES
 
 
-METHODS = list(BASELINES)   # Step 13 adds the models from models.make_model: lr, rf, hgb
+METHODS = [*BASELINES, *models.MODELS]
+
+
+def check_params(method, params):
+    """ValueError unless params suit method: exactly a baseline's, or some of the ones a model is tuned on."""
+    if method in BASELINES:
+        baselines.check_params(method, params)
+    else:
+        models.check_params(method, params)
 
 
 def folds(dataset) -> list:
