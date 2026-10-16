@@ -624,6 +624,78 @@ python -m spinwarn.run cv --method b1|b2|b3|lr|rf|hgb [--params '{...}'] [--hori
 
 **Done when:** `metrics.json` exists and the test sessions were scored once.
 
+**Results (2026-10-16):** done. 23 new tests, 268 in all. `final` ran once, unforced, at 17:50 on 2026-10-16, taking 31 s on the Mac (Apple M5, 10 cores). It wrote `results/metrics.json` and `results/final.lock`. Labelled with today's rule, the test sessions have 27 spins in 16.4 scored min (20.2 recorded): `202102` is natural, 10 spins in 8.7 scored min, and `233636` is deliberate, 17 in 7.7. Both counts match the lock's, so the reverse fix didn't change `233636`. Each threshold comes from its method's chosen CV run; the FA/min column is the rate that threshold gave on test. Intervals are bootstrap 95%, resampling the test spins 1,000 times. One test spin is 3.7 points of recall.
+
+At the 1 FA/min threshold:
+
+| Method | PR-AUC, CV → test | Recall, lead ≥ 0.5 s | Recall, any lead | FA/min on test | Time in alarm | Median lead (s) |
+| --- | --- | --- | --- | --- | --- | --- |
+| B1: \|slip\| | 0.440 → 0.410 | 0.33 (9/27) [0.15, 0.52] | 1.00 (27/27) [1.00, 1.00] | 1.10 | 2.7% | 0.28 |
+| B2: θ1 = 25° | 0.535 → 0.485 | 0.59 (16/27) [0.41, 0.78] | 0.63 (17/27) [0.44, 0.78] | 0.67 | 1.3% | 0.67 |
+| B3: time to 90° | 0.838 → 0.778 | 0.93 (25/27) [0.81, 1.00] | 1.00 (27/27) [1.00, 1.00] | 1.22 | 2.6% | 0.55 |
+| Logistic regression | 0.873 → 0.835 | 0.89 (24/27) [0.78, 1.00] | 1.00 (27/27) [1.00, 1.00] | 0.98 | 2.9% | 0.65 |
+| Random forest | 0.865 → 0.939 | 0.93 (25/27) [0.81, 1.00] | 1.00 (27/27) [1.00, 1.00] | 0.91 | 2.7% | 0.62 |
+| Gradient boosting | 0.904 → 0.933 | 0.93 (25/27) [0.81, 1.00] | 1.00 (27/27) [1.00, 1.00] | 1.40 | 2.6% | 0.62 |
+
+At the 0.5 FA/min threshold:
+
+| Method | Recall, lead ≥ 0.5 s | Recall, any lead | FA/min on test | Median lead (s) |
+| --- | --- | --- | --- | --- |
+| B1: \|slip\| | 0.19 (5/27) [0.04, 0.33] | 0.96 (26/27) [0.89, 1.00] | 0.67 | 0.23 |
+| B2: θ1 = 25° | 0.56 (15/27) [0.37, 0.74] | 0.59 (16/27) [0.41, 0.74] | 0.30 | 0.64 |
+| B3: time to 90° | 0.19 (5/27) [0.04, 0.33] | 1.00 (27/27) [1.00, 1.00] | 0.85 | 0.40 |
+| Logistic regression | 0.74 (20/27) [0.59, 0.89] | 1.00 (27/27) [1.00, 1.00] | 0.79 | 0.53 |
+| Random forest | 0.78 (21/27) [0.63, 0.93] | 1.00 (27/27) [1.00, 1.00] | 0.79 | 0.57 |
+| Gradient boosting | 0.78 (21/27) [0.59, 0.93] | 1.00 (27/27) [1.00, 1.00] | 0.61 | 0.55 |
+
+- **Against B3, the baseline to beat, the result depends on the operating point.**
+  - At the 1 FA/min threshold, rf, hgb and B3 each catch 25 of 27 with at least 0.5 s of lead, and lr catches 24. The models' CV margin of 3–6 spins (Step 13) doesn't show on test, and the three share an interval of [0.81, 1.00]. They don't run at the same rate, though: rf gets there at 0.91 FA/min, B3 at 1.22 and hgb at 1.40, which is 15, 20 and 23 false alarms.
+  - At the 0.5 FA/min threshold, B3 falls to 5/27, as it fell to 20/58 on CV. rf and hgb catch 21 and lr 20, and none of their intervals overlaps B3's.
+  - On PR-AUC, every model is above B3: rf 0.939, hgb 0.933 and lr 0.835, against 0.778.
+- **At 0.5 FA/min, B2 is the closest baseline:** 15/27 at 0.30 FA/min, which is 5 false alarms. hgb's 21 cost 10 and rf's 13, and B2's interval overlaps all three models'. B2's misses are spins it never alerts on (10 of its 11 at 1 FA/min), not late alerts.
+- **The thresholds don't hold their false-alarm rate on test.** At the 1 FA/min threshold, methods run from 0.67 to 1.40 FA/min. At 0.5, they run from 0.30 to 0.85, and every method but B2 is over 0.5. So the Project Plan's "same false-alarm rate" holds for the targets set on CV, not for the rates seen on test, and every recall here comes with its own rate. B1 and B3 have nothing to refit and overshoot too, so it's at least partly the sessions, not only hgb's refit on all 5 dev sessions. hgb's threshold at 1 FA/min is 0.016. The counts are small: 0.5 FA/min over 16.4 min is about 8 false alarms, and the methods got 5–14.
+- **Most headline misses are close.** lr, rf and hgb miss 7 spins between them at 1 FA/min. Five are warned 0.38–0.47 s ahead, and the other two 0.27 and 0.33 s. rf and hgb miss the same two, `202102` at 353.3 s and 594.7 s. B3 misses two others: `202102` at 509.5 s (0.48 s) and `233636` at 356.2 s (0.47 s).
+- **The Project Plan's rule separates nothing,** as on CV (Step 12). At both thresholds, B3 and every model catch 27/27 with an interval of [1.00, 1.00]; B1 catches 27 and 26. Only B2 misses spins outright. Alert precision doesn't rank methods either: at 1 FA/min it runs 0.54–0.64 and follows the false alarms.
+- **Natural against deliberate:** both kinds have enough spins (`MIN_KIND_SPINS` = 10), but natural has exactly 10, so one natural spin is 10 points.
+
+  | Method | 1 FA/min: natural | Deliberate | 0.5 FA/min: natural | Deliberate |
+  | --- | --- | --- | --- | --- |
+  | B1 | 3/10 | 6/17 | 2/10 | 3/17 |
+  | B2 | 5/10 | 11/17 | 4/10 | 11/17 |
+  | B3 | 9/10 | 16/17 | 2/10 | 3/17 |
+  | lr | 8/10 | 16/17 | 6/10 | 14/17 |
+  | rf | 8/10 | 17/17 | 7/10 | 14/17 |
+  | hgb | 8/10 | 17/17 | 7/10 | 14/17 |
+
+  These are headline recalls. Every method catches more of the deliberate spins: at 1 FA/min, rf and hgb catch all 17, and 8 of the 10 natural spins, with an interval of [0.50, 1.00] on natural. On natural spins, B3 is one spin ahead of the models. By the Plan's rule, every method but B2 catches all 10 natural spins at both thresholds. hgb's false alarms are mostly in the natural session: 1.61 FA/min there, against 1.17 in the deliberate one. With 10 natural spins, don't read much into the gap.
+- **PR-AUC rose from CV to test for the tree models** (rf 0.865 → 0.939, hgb 0.904 → 0.933) and fell for every other method. The refit trains on all 5 dev sessions, while each CV fold trained on 3 or 4. Untested whether that's why.
+- **Permutation importance, for hgb** (the best CV PR-AUC among the models), on the scored test frames:
+  - Shuffling `time_to_90_last`, B3's own signal, drops average precision by 0.737 ± 0.005, from 0.933 to about 0.20.
+  - Next come `yaw_acc_rel_last` 0.087, `speed_kmh_last` 0.028, `abs_slip_last` 0.024 and `gas_mean` 0.023.
+  - The other 21 are all under 0.015, and 8 of them are below 0, the lowest being `brake_mean` at −0.006.
+  - Features that carry the same information share it (`abs_slip` has five), so a low number doesn't mean the information is unused. Read this way, hgb is mostly B3 with corrections from yaw acceleration and speed.
+- **Time per prediction:** the median of 1,000 single-row predictions on scored test frames, on the Mac.
+
+  | Method | B1 | B2 | B3 | lr | rf | hgb |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | ms | 0.005 | 0.011 | 0.005 | 0.075 | 13.2 (3.35 on one core) | 1.53 |
+
+  Step 16's budget is 16.7 ms for features and prediction together. rf on every core takes 13.2 ms of it, because it starts threads on every call; on one core it takes 3.4 ms. hgb takes 1.5 ms and lr 0.08 ms. hgb has no `n_jobs` (its threads are OpenMP's), so it isn't timed on one core. The live loop runs on the AC PC, so Step 16 has to time it there.
+- **Choices the plan left open:**
+  - **The lock:** `final.lock` is written after everything the dev set decides, just before the test sessions load. That covers the chosen runs checked against the dataset, the thresholds, the refits and the best model, so a check that fails never loads the test sessions. `metrics.json` counts as a lock too. `--force` logs a row in `experiments.md` naming when the previous run loaded them.
+  - **Labels:** the test sessions are labelled at run time with today's rule, since `load_test_sessions` rebuilds them from raw.
+  - **Kinds** come from each session's JSON, the logger's `--kind`, through `session_kind` in `data.py`. A kind gets its own recall at `MIN_KIND_SPINS` spins or more (new in `config.py`); with fewer, it goes under Limitations.
+  - **Intervals:** `bootstrap_recall` runs per method and threshold, for both recalls, overall and per kind. Each method gets its own interval; they aren't paired.
+  - **Importance** is scored by average precision on the scored test frames, with `N_PERMUTATIONS` = 10 shuffles per feature (new in `config.py`), for the model with the best CV PR-AUC. A tie would go to the first in method order.
+  - **Timing** uses `N_TIMING` = 1,000 scored test frames (new in `config.py`), picked with `SEED`. A model gets each frame as a 1-row array of `FEATURES`, as a live loop would pass it, since a DataFrame's overhead would swamp lr's 0.08 ms. A baseline gets a 1-row slice of its signals. A model with `n_jobs` is timed on one core too.
+  - **`metrics.json`** has, for each method, the run, its params and how it was chosen. It has the CV numbers with the curve, and the test PR-AUC and each operating point with its threshold, intervals, per-kind numbers and every spin's catch and lead. It also has the importance list and the dev and test counts, with `null` where a number is undefined.
+  - `cv.fit_predict` is now `fit`, then `predict`, so `final` refits on every dev session without a fold.
+- **For Step 15:**
+  - `metrics.json` and `final.lock` are untracked but not ignored. Commit them, or a fresh clone can't run `report`.
+  - `metrics.json` has the CV curves but no test scores, so `recall_vs_fa.png` is CV, as planned. A test curve would need `final --force`.
+  - Every spin's catch for every method is in `metrics.json`, so a paired comparison on the same 27 spins (hgb against B3, say) needs no rerun. Overlapping separate intervals don't by themselves mean no difference.
+  - For the README's limitations, add that the CV thresholds didn't hold their false-alarm rate on test, beside the items already listed.
+
 ### Step 15 — Report and README
 
 - **`python -m spinwarn.report`:** reads `metrics.json` and writes:
