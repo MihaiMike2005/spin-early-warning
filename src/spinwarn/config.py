@@ -15,6 +15,8 @@ SPLITS_PATH = ROOT / "data" / "splits.json"   # the locked test sessions
 CV_DIR = ROOT / "results" / "cv"              # out-of-fold scores, one file per CV run
 EXPERIMENTS_PATH = ROOT / "experiments.md"    # one row per CV run
 CHOSEN_PATH = ROOT / "results" / "chosen.json"   # each method's tuned CV run, for the final run
+METRICS_PATH = ROOT / "results" / "metrics.json"   # the final run's results, for report.py
+FINAL_LOCK_PATH = ROOT / "results" / "final.lock"  # written as the final run loads the test sessions
 
 GRID_HZ = 60             # raw packets are resampled onto this uniform grid
 GAP_S = 0.1               # a longer gap starts a new segment
@@ -34,6 +36,9 @@ N_THRESHOLDS = 200        # candidate alert thresholds: score quantiles, finest 
 B2_THETA1_DEG = tuple(range(10, 81, 5))   # B2's |slip| gate: CV keeps the best of 10-80°
 N_FOLDS = 4
 N_TUNE = 15               # configs run.py tune tries per model: the Project Plan's 10-20
+MIN_KIND_SPINS = 10       # test spins a kind (natural, deliberate) needs for its own recall: 1 spin = 10 points
+N_PERMUTATIONS = 10       # shuffles per feature for the best model's permutation importance
+N_TIMING = 1000           # single-row predictions timed per method
 SEED = 0
 REVERSE_GEAR = 0          # AC gear: 0 = R, 1 = N, 2 = 1st
 

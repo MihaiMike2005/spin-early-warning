@@ -105,16 +105,17 @@ def _scores(df, score) -> np.ndarray:
 def _segments(df, score) -> list:
     """Each segment of each session in df, ready to score at any threshold.
 
-    Per segment: its grid frames, the score with −∞ on excluded frames, the
-    onset frames, and a running count of scored frames, for time in alarm.
+    Per segment: its (session, segment), its grid frames, the score with −∞
+    on excluded frames, the onset frames, and a running count of scored
+    frames, for time in alarm.
     """
     excluded = df["excluded"].to_numpy(dtype=bool)
     masked = np.where(excluded, -np.inf, _scores(df, score))
     frame = _frames(df["t"])
     onset = df["onset"].to_numpy(dtype=bool)
     return [
-        (frame[rows], masked[rows], frame[rows][onset[rows]], np.r_[0, np.cumsum(~excluded[rows])])
-        for rows in df.groupby(["session", "segment"], sort=False).indices.values()
+        (key, frame[rows], masked[rows], frame[rows][onset[rows]], np.r_[0, np.cumsum(~excluded[rows])])
+        for key, rows in df.groupby(["session", "segment"], sort=False).indices.items()
     ]
 
 
@@ -127,7 +128,7 @@ def _summary(segments, threshold) -> dict:
     n_spins = caught = caught_min_lead = alerts = false_alarms = in_alarm = scored = 0
     leads = []
     min_lead = round(MIN_LEAD_S * GRID_HZ)
-    for frame, score, onsets, scored_before in segments:
+    for _key, frame, score, onsets, scored_before in segments:
         starts, ends = _runs(frame, score > threshold)
         hit, lead, false_alarm = _match_frames(frame[starts], frame[ends], onsets)
         n_spins += len(onsets)
@@ -172,6 +173,30 @@ def summarize(df, score, threshold) -> dict:
     spins ÷ (spins + false alarms), which the false-alarm target sets.
     """
     return _summary(_segments(df, score), threshold)
+
+
+SPIN_COLUMNS = ["session", "t", "caught", "caught_min_lead", "lead"]
+
+
+def spin_catches(df, score, threshold) -> pd.DataFrame:
+    """One row per spin onset in df, in order, at threshold: what summarize counts, spin by spin.
+
+    session and t (the onset), caught by the Project Plan's rule,
+    caught_min_lead (the headline: with at least MIN_LEAD_S of lead), and
+    lead (s, NaN if missed). One bool per spin is what bootstrap_recall
+    resamples.
+    """
+    min_lead = round(MIN_LEAD_S * GRID_HZ)
+    rows = []
+    for (session, _segment), frame, masked, onsets, _scored_before in _segments(df, score):
+        starts, ends = _runs(frame, masked > threshold)
+        hit, lead, _false_alarm = _match_frames(frame[starts], frame[ends], onsets)
+        rows += [
+            {"session": session, "t": float(onset / GRID_HZ), "caught": bool(h),
+             "caught_min_lead": bool(h and ahead >= min_lead), "lead": float(ahead / GRID_HZ) if h else float("nan")}
+            for onset, h, ahead in zip(onsets, hit, lead)
+        ]
+    return pd.DataFrame(rows, columns=SPIN_COLUMNS)
 
 
 def _candidates(df, score) -> np.ndarray:

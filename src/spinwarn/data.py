@@ -212,6 +212,17 @@ def load_test_sessions(confirm=False) -> dict:
     return {s: load_session(s, rebuild=True) for s in ids}
 
 
+def session_kind(session_id):
+    """natural or deliberate: the kind the logger's --kind wrote into the session's JSON; None without one.
+
+    Only the session's notes, not its telemetry, so reading a test session's
+    is no peek. Step 14 reports recall on each kind.
+    """
+    json_path = RAW_DIR / f"{session_id}.json"
+    meta = read_meta(json_path.read_bytes()) if json_path.exists() else None
+    return (meta or {}).get("kind")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="python -m spinwarn.data",

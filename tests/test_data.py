@@ -303,6 +303,14 @@ def test_test_sessions_load_only_when_confirmed(dirs):
     assert list(data.load_test_sessions(confirm=True)) == ["b"]
 
 
+def test_a_sessions_kind_comes_from_its_json(dirs):
+    raw, _, _ = dirs
+    (raw / "a.json").write_text(json.dumps({"car": "hush_nissan_silvia_s14", "kind": "deliberate"}))
+    (raw / "b.json").write_text("")   # damaged: the logger was stopped while rewriting it
+    assert data.session_kind("a") == "deliberate"
+    assert data.session_kind("b") is None and data.session_kind("c") is None   # c has no JSON
+
+
 def test_test_sessions_are_rebuilt_never_read_from_the_cache(dirs):
     raw, _, splits = dirs
     write_session(raw, "b", speed_kmh=50.0)

@@ -124,6 +124,28 @@ keeps the best by PR-AUC. A baseline runs once: b1 and b3 have nothing to
 tune, and b2 picks θ1 by the headline, as `cv` does. `--horizon 1.0` reads
 that horizon's table and records into `results/chosen_h1.json`.
 
+```
+python -m spinwarn.run final [--horizon 1.0] [--force] [--note "..."]
+```
+
+scores the test sessions once, with every method's run in
+`results/chosen.json`. It checks each run against the dataset first. Each
+method's thresholds at 1 and 0.5 FA/min come from its run's out-of-fold
+scores, and each model is refit on every dev session. Only then does it
+load the test sessions, label them with today's rule and score them. It
+reports both recalls with bootstrap 95% intervals (the test spins
+resampled 1,000 times), the same for natural and deliberate spins, plus
+PR-AUC, time in alarm, median lead and the median time of one single-row
+prediction. It also runs permutation importance on the test sessions for
+the model with the best CV PR-AUC. Everything goes to
+`results/metrics.json`, with `null` where a number is undefined (a missed
+spin's lead, a ratio with nothing to divide by). `results/final.lock` is
+written just before the test sessions load, and `final` refuses to run
+while it or `metrics.json` exists. `--force` overrides them and logs the
+rerun in `experiments.md`.
+`--horizon 1.0` reads `results/chosen_h1.json` and writes
+`metrics_h1.json`, with its own lock.
+
 The headline is recall at 1 FA/min counting only spins warned of at least
 0.5 s ahead, the horizon the labels look. Recall by the Project Plan's
 rule, which counts any warning 0.1 s or more ahead, comes beside it. That
@@ -151,5 +173,6 @@ and 22 false.
 | `notebooks/01_explore.ipynb` | Rate and gaps, slip with onsets, the countersteer sign, every spin |
 | `results/cv/` | Out-of-fold scores, one file per CV run (gitignored) |
 | `results/chosen.json` | Each method's tuned CV run, for the final test |
+| `results/metrics.json` | The final test's results, and `results/final.lock`, its run-once lock |
 | `notes.md` | Session log: car, track, setup, minutes, spins, kind, video |
 | `experiments.md` | One row per CV run |

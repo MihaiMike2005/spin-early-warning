@@ -264,6 +264,30 @@ def test_pr_auc_takes_minus_infinity_as_the_lowest_score():
     assert evaluate.pr_auc(df, score) == pytest.approx(expected)
 
 
+# --- spin_catches ---------------------------------------------------------------
+
+def test_spin_catches_are_summarizes_counts_spin_by_spin():
+    # In a: caught with 1.0 s of lead, then with 0.3 s; b's spin is missed.
+    a = session(20.0, onsets=[5.0, 15.0], name="a")
+    b = session(10.0, onsets=[5.0], name="b")
+    df = pd.concat([a, b], ignore_index=True)
+    score = np.r_[spikes(a, (3.7, 4.9), (14.7, 14.9)), spikes(b)]
+    spins = evaluate.spin_catches(df, score, 0.5)
+
+    assert list(spins.columns) == evaluate.SPIN_COLUMNS
+    assert spins["session"].tolist() == ["a", "a", "b"] and spins["t"].tolist() == pytest.approx([5.0, 15.0, 5.0])
+    assert spins["caught"].tolist() == [True, True, False]
+    assert spins["caught_min_lead"].tolist() == [True, False, False]
+    assert spins["lead"].iloc[:2].tolist() == pytest.approx([1.0, 0.3]) and np.isnan(spins["lead"].iloc[2])
+    summary = evaluate.summarize(df, score, 0.5)
+    assert (summary["n_spins"], summary["caught"], summary["caught_min_lead"]) == (3, 2, 1)
+
+
+def test_no_spins_no_spin_catches():
+    spins = evaluate.spin_catches(session(10.0), np.ones(round(10.0 * GRID_HZ)), 0.5)
+    assert spins.empty and list(spins.columns) == evaluate.SPIN_COLUMNS
+
+
 # --- bootstrap_recall -----------------------------------------------------------
 
 def test_bootstrap_recall_is_the_same_on_every_run_with_the_same_seed():

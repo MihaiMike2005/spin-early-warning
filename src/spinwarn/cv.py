@@ -69,21 +69,30 @@ def training_rows(dataset, rows) -> np.ndarray:
     return rows[keep & ~dataset["excluded"].to_numpy(dtype=bool)[rows]]
 
 
-def fit_predict(model, dataset, train, test) -> np.ndarray:
-    """model fitted on train's training_rows, then its spin probability on every row of test.
+def fit(model, dataset, rows):
+    """model fitted on the training_rows of rows, row positions in the dataset; returns the model."""
+    fit_on = dataset.iloc[training_rows(dataset, rows)]
+    return model.fit(fit_on[FEATURES], fit_on["target"])
+
+
+def predict(model, rows) -> np.ndarray:
+    """A fitted model's spin probability on every row of rows: dataset rows, or the test sessions' (Step 14).
 
     A row with a feature unknown gets NaN, since not every model takes one.
     That's only a segment's first WINDOW_S, which label() always excludes;
     on a scored frame evaluate refuses the NaN.
     """
-    fit_on = dataset.iloc[training_rows(dataset, train)]
-    model.fit(fit_on[FEATURES], fit_on["target"])
-    features = dataset[FEATURES].iloc[test]
+    features = rows[FEATURES]
     known = features.notna().all(axis=1).to_numpy()
     scores = np.full(len(features), np.nan)
     if known.any():
         scores[known] = model.predict_proba(features[known])[:, 1]
     return scores
+
+
+def fit_predict(model, dataset, train, test) -> np.ndarray:
+    """model fitted on train's training_rows, then its spin probability on every row of test (fit, then predict)."""
+    return predict(fit(model, dataset, train), dataset.iloc[test])
 
 
 def oof_scores(dataset, method, params=None) -> np.ndarray:

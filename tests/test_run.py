@@ -1,59 +1,96 @@
 """
-Tests for spinwarn.run: the dataset build, its staleness check, the test lock, cv and tune.
+Tests for spinwarn.run: the dataset build, its staleness check, the test lock, cv, tune and the final run.
 
 Synthetic grid sessions with every column labels and features read, and the
 paths and session lists swapped for tmp_path ones, so they run anywhere
 without data/raw/ and never touch the repo's splits.json, results/ or
-experiments.md.
+experiments.md. The final run's test sessions are synthetic too, from a
+stand-in for data.load_test_sessions: no test here loads the real ones.
 """
 
+import copy
 import json
+import shutil
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.inspection import permutation_importance
 
-from spinwarn import cv, evaluate, models, run
-from spinwarn.config import EXPERIMENTS_PATH, GRID_HZ, N_FOLDS
+from spinwarn import baselines, cv, evaluate, models, run
+from spinwarn.config import EXPERIMENTS_PATH, FA_TARGETS, GRID_HZ, N_FOLDS, SEED
 from spinwarn.features import FEATURES, INPUTS, make_features
-from spinwarn.labeling import label
+from spinwarn.labeling import find_onsets, label
 
 
 STEP = 1 / GRID_HZ
 
 
-def session(spin_at=5.0, seed=0):
-    """12 s at 50 km/h on the grid: 8 s, a 0.5 s gap, 4 s. |slip| is over 90° from spin_at, if given."""
+def session(spin_at=5.0, seed=0, ramp=False):
+    """12 s at 50 km/h on the grid: 8 s, a 0.5 s gap, 4 s. |slip| is over 90° from spin_at, if given.
+
+    With ramp, |slip| climbs from 20° toward 90° over the second before
+    spin_at, so B1 sees each spin coming; otherwise it jumps.
+    """
     t = np.concatenate([np.arange(round(8.0 * GRID_HZ)), np.arange(round(8.5 * GRID_HZ), round(12.5 * GRID_HZ))])
     t = t / GRID_HZ
     rng = np.random.default_rng(seed)
     df = pd.DataFrame({name: rng.normal(size=len(t)).cumsum() for name in INPUTS})
     over = t >= spin_at - STEP / 2 if spin_at is not None else np.zeros(len(t), dtype=bool)
     slip = np.where(over, 120.0, 20.0)
+    if ramp and spin_at is not None:
+        climbing = (t > spin_at - 1.0 + STEP / 2) & ~over
+        slip[climbing] = 20.0 + 70.0 * (t[climbing] - (spin_at - 1.0))
     return df.assign(t=t, segment=(t > 8.0).astype(int), speed_kmh=50.0, gear=3, abs_slip=slip, slip_deg=slip)
+
+
+def locked_session(state, session_id):
+    """A locked test session as the stand-in loads it: the same every time it's loaded."""
+    spin_at = 5.0 if session_id in state["spinning"] else None
+    return session(spin_at=spin_at, seed=100 + state["all"].index(session_id), ramp=state["ramp"])
 
 
 @pytest.fixture
 def sessions(tmp_path, monkeypatch):
     """Recorded sessions a, b and c, all dev until a test changes "dev"; "loaded" lists the loads.
 
-    The sessions in "spinning" spin once, at 5 s: a, until a test changes it.
+    The sessions in "spinning" spin once, at 5 s: a, until a test changes
+    it. With "ramp", every spin is seen coming (session()). The locked test
+    sessions, "test", load only through a stand-in for
+    data.load_test_sessions, which counts its calls in "test_loads"; their
+    kinds are in "kinds".
     """
-    state = {"all": ["a", "b", "c"], "dev": ["a", "b", "c"], "loaded": [], "spinning": {"a"}}
+    return recorded(tmp_path, monkeypatch)
+
+
+def recorded(tmp_path, monkeypatch):
+    """The sessions fixture's state, with run's paths and session loads swapped for tmp_path's and these."""
+    state = {"all": ["a", "b", "c"], "dev": ["a", "b", "c"], "test": [], "loaded": [], "spinning": {"a"},
+             "ramp": False, "kinds": {}, "test_loads": 0}
     monkeypatch.setattr(run, "DATASET_PATH", tmp_path / "processed" / "dataset.parquet")
     monkeypatch.setattr(run, "SPLITS_PATH", tmp_path / "splits.json")
     monkeypatch.setattr(run, "CV_DIR", tmp_path / "cv")
     monkeypatch.setattr(run, "EXPERIMENTS_PATH", tmp_path / "experiments.md")
     monkeypatch.setattr(run, "CHOSEN_PATH", tmp_path / "results" / "chosen.json")
+    monkeypatch.setattr(run, "METRICS_PATH", tmp_path / "results" / "metrics.json")
+    monkeypatch.setattr(run, "FINAL_LOCK_PATH", tmp_path / "results" / "final.lock")
     monkeypatch.setattr(run, "list_sessions", lambda: list(state["all"]))
     monkeypatch.setattr(run, "dev_sessions", lambda: list(state["dev"]))
 
     def load(session_id):
         state["loaded"].append(session_id)
-        return session(spin_at=5.0 if session_id in state["spinning"] else None, seed=len(state["loaded"]))
+        spin_at = 5.0 if session_id in state["spinning"] else None
+        return session(spin_at=spin_at, seed=len(state["loaded"]), ramp=state["ramp"])
+
+    def load_test(confirm=False):
+        assert confirm, "only the final run loads the test sessions, with confirm=True"
+        state["test_loads"] += 1
+        return {s: locked_session(state, s) for s in state["test"]}
 
     monkeypatch.setattr(run, "load_session", load)
+    monkeypatch.setattr(run, "load_test_sessions", load_test)
+    monkeypatch.setattr(run, "session_kind", lambda s: state["kinds"].get(s))
     return state
 
 
@@ -61,6 +98,7 @@ def lock(sessions, *test):
     """Lock test as the test sessions, as lock-test would, and leave them out of the dev sessions."""
     run.SPLITS_PATH.write_text(json.dumps({"test": list(test)}))
     sessions["dev"] = [s for s in sessions["all"] if s not in test]
+    sessions["test"] = list(test)
 
 
 # --- session_rows -------------------------------------------------------------
@@ -482,3 +520,390 @@ def test_lock_test_refuses_and_writes_nothing(sessions, capsys, recorded, argv, 
         run.main(["lock-test", *argv])
     assert message in capsys.readouterr().err
     assert not run.SPLITS_PATH.exists()
+
+
+# --- final ------------------------------------------------------------------------
+
+def final_ready(sessions, monkeypatch, *horizon_args):
+    """Eight recorded sessions, f (natural), g and h (deliberate) locked as test, the rest built and every method tuned.
+
+    Every session but d and e spins once, at 5 s, and is seen coming
+    (session()'s ramp). Each model tunes one small config (SMALL_GRIDS).
+    """
+    for name, grid in SMALL_GRIDS.items():
+        monkeypatch.setitem(models.SEARCH, name, grid)
+    monkeypatch.setattr(cv, "B2_THETA1_DEG", (10, 15))
+    quick_final(monkeypatch)
+    sessions["all"] = list("abcdefgh")
+    sessions["spinning"] = {"a", "b", "c", "f", "g", "h"}
+    sessions["ramp"] = True
+    sessions["kinds"] = {"f": "natural", "g": "deliberate", "h": "deliberate"}
+    lock(sessions, "f", "g", "h")
+    run.main(["build", *horizon_args])
+    for method in cv.METHODS:
+        run.main(["tune", "--method", method, "--n", "1", *horizon_args])
+
+
+# One small config per model for the synthetic tune, so a final run on it takes about a second.
+SMALL_GRIDS = {"lr": {"C": [0.1]}, "rf": {"n_estimators": [20], "min_samples_leaf": [5]},
+               "hgb": {"max_leaf_nodes": [15]}}
+
+
+def quick_final(monkeypatch):
+    """The final run timing N_TIMING = 5 predictions per method and shuffling each feature twice."""
+    monkeypatch.setattr(run, "N_TIMING", 5)
+    monkeypatch.setattr(run, "N_PERMUTATIONS", 2)
+
+
+@pytest.fixture(scope="module")
+def tuned(tmp_path_factory):
+    """(files, state): final_ready's, built and tuned once for every final test that starts from it."""
+    root = tmp_path_factory.mktemp("tuned")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        state = recorded(root, monkeypatch)
+        final_ready(state, monkeypatch)
+    return root, state
+
+
+@pytest.fixture
+def ready(sessions, tmp_path, monkeypatch, tuned):
+    """The sessions fixture as final_ready leaves it, from a copy of tuned's files."""
+    root, state = tuned
+    shutil.copytree(root, tmp_path, dirs_exist_ok=True)
+    sessions.update({key: copy.deepcopy(state[key]) for key in ["all", "dev", "test", "spinning", "ramp", "kinds"]})
+    quick_final(monkeypatch)
+    return sessions
+
+
+def final_test_rows(sessions, horizon=0.5):
+    """The test sessions' rows as the final run scores them: loaded, then labelled with today's rule."""
+    return pd.concat([run.session_rows(s, locked_session(sessions, s), horizon) for s in sessions["test"]],
+                     ignore_index=True)
+
+
+def refitted(method, params, dataset):
+    """method fitted on every dev session's training rows, without run.refit."""
+    fit_on = dataset.iloc[cv.training_rows(dataset, np.arange(len(dataset)))]
+    return models.make_model(method, params).fit(fit_on[FEATURES], fit_on["target"])
+
+
+def expected_scores(method, params, dataset, test):
+    """method's scores on the test rows, a model's refit on every dev session, without run.method_scores."""
+    if method in baselines.BASELINES:
+        return baselines.score(method, test, params)
+    known = test[FEATURES].notna().all(axis=1).to_numpy()
+    scores = np.full(len(test), np.nan)
+    scores[known] = refitted(method, params, dataset).predict_proba(test.loc[known, FEATURES])[:, 1]
+    return scores
+
+
+def as_written(summary):
+    """summary as metrics.json holds it: NaN as null."""
+    return {k: None if isinstance(v, float) and np.isnan(v) else v for k, v in summary.items()}
+
+
+def test_final_scores_every_chosen_run_on_the_test_sessions_at_its_cv_thresholds(ready, monkeypatch, capsys):
+    monkeypatch.setattr(run, "MIN_KIND_SPINS", 2)
+    capsys.readouterr()
+    run.main(["final"])
+    out = capsys.readouterr().out
+
+    assert ready["test_loads"] == 1
+    assert json.loads(run.FINAL_LOCK_PATH.read_text())["forced"] is False
+    metrics = json.loads(run.METRICS_PATH.read_text())
+    assert "NaN" not in run.METRICS_PATH.read_text()   # null instead, as strict JSON has it
+    assert list(metrics["methods"]) == cv.METHODS and metrics["horizon"] == 0.5 and metrics["forced"] is False
+    dataset, test = run.load_dataset(), final_test_rows(ready)
+    assert metrics["dev"]["sessions"] == list("abcde") and metrics["built_with"] == run.built_with(0.5)
+    # One spin each, found again by today's rule: f natural, g and h deliberate.
+    assert {s: (v["kind"], v["spins"]) for s, v in metrics["test"]["sessions"].items()} == {
+        "f": ("natural", 1), "g": ("deliberate", 1), "h": ("deliberate", 1)}
+    assert all(len(find_onsets(locked_session(ready, s))[0]) == 1 for s in "fgh")
+    assert "30 positive frames" in out and "kinds: f natural, g deliberate, h deliberate" in out
+
+    chosen = json.loads(run.CHOSEN_PATH.read_text())
+    for method in cv.METHODS:
+        result, entry = metrics["methods"][method], chosen[method]
+        oof = pd.read_parquet(run.CV_DIR / f"{entry['run_id']}.parquet")
+        assert (result["run_id"], result["params"]) == (entry["run_id"], entry["params"])
+        assert result["cv"]["pr_auc"] == pytest.approx(entry["pr_auc"])
+        assert len(result["cv"]["curve"]["threshold"]) == len(evaluate.recall_fa_curve(oof, oof["score"]))
+        scores = expected_scores(method, entry["params"], dataset, test)
+        assert result["test"]["pr_auc"] == pytest.approx(evaluate.pr_auc(test, scores))
+
+        for target, point in zip(FA_TARGETS, result["test"]["operating_points"], strict=True):
+            # The threshold from the chosen run's out-of-fold scores, never from the test sessions.
+            threshold = evaluate.threshold_for_fa(oof, oof["score"], target)
+            assert (point["fa_target"], point["threshold"]) == (target, threshold)
+            summary = evaluate.summarize(test, scores, threshold)
+            assert {k: point[k] for k in summary} == pytest.approx(as_written(summary))
+            # Both recalls' intervals, from one catch or miss per test spin.
+            spins = evaluate.spin_catches(test, scores, threshold)
+            assert point["recall_min_lead_ci"] == list(evaluate.bootstrap_recall(spins["caught_min_lead"]))
+            assert point["recall_ci"] == list(evaluate.bootstrap_recall(spins["caught"]))
+            assert [(s["session"], s["kind"], s["caught"]) for s in point["spins"]] == list(
+                zip("fgh", ["natural", "deliberate", "deliberate"], spins["caught"]))
+            for kind, of_kind in [("natural", ["f"]), ("deliberate", ["g", "h"])]:
+                rows = test["session"].isin(of_kind).to_numpy()
+                by_kind = point["by_kind"][kind]
+                expected = evaluate.summarize(test[rows], scores[rows], threshold)
+                assert {k: by_kind[k] for k in expected} == pytest.approx(as_written(expected))
+                in_kind = spins[spins["session"].isin(of_kind)]
+                assert by_kind["recall_ci"] == list(evaluate.bootstrap_recall(in_kind["caught"]))
+                assert by_kind["enough"] is (kind == "deliberate")   # 2 spins against 1, at MIN_KIND_SPINS 2
+        assert set(result["timing"]) == ({"ms", "ms_n_jobs_1"} if method == "rf" else {"ms"})
+        assert all(ms > 0 for ms in result["timing"].values())
+
+    # Every spin climbs for a second first, so B1 at its CV threshold catches all three a second ahead.
+    b1 = metrics["methods"]["b1"]["test"]["operating_points"][0]
+    assert (b1["caught_min_lead"], b1["false_alarms"], b1["recall_min_lead_ci"]) == (3, 0, [1.0, 1.0])
+    assert "b1 {}: PR-AUC" in out and "    natural: recall with ≥ 0.5 s lead 1.00 (1/1) [1.00, 1.00]" in out
+    assert "under 2 spins, so for the limitations" in out and f"wrote {run.METRICS_PATH}" in out
+
+
+def test_permutation_importance_is_the_best_cv_models_on_the_scored_test_frames(ready, monkeypatch, capsys):
+    run.main(["final"])
+    metrics = json.loads(run.METRICS_PATH.read_text())
+    ranked = metrics["importance"]
+
+    # Best by CV PR-AUC, as the Project Plan selects models: the test sessions never pick it.
+    chosen = json.loads(run.CHOSEN_PATH.read_text())
+    best = max(models.MODELS, key=lambda m: chosen[m]["pr_auc"])
+    assert (ranked["method"], ranked["scoring"], ranked["n_repeats"]) == (best, "average_precision", 2)
+    assert sorted(f["feature"] for f in ranked["features"]) == sorted(FEATURES)
+    means = [f["mean"] for f in ranked["features"]]
+    assert means == sorted(means, reverse=True)
+
+    test = final_test_rows(ready)
+    scored = test[~test["excluded"]]
+    expected = permutation_importance(refitted(best, chosen[best]["params"], run.load_dataset()), scored[FEATURES],
+                                      scored["target"], scoring="average_precision", n_repeats=2, random_state=SEED)
+    assert {f["feature"]: f["mean"] for f in ranked["features"]} == pytest.approx(
+        dict(zip(FEATURES, expected.importances_mean)))
+    assert f"permutation importance of {best}" in capsys.readouterr().out
+
+
+def test_the_final_run_refuses_to_run_again_while_its_lock_exists(ready, monkeypatch, capsys):
+    run.main(["final"])
+    written, logged = run.METRICS_PATH.read_text(), run.EXPERIMENTS_PATH.read_text()
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        run.main(["final"])
+    err = capsys.readouterr().err
+    assert f"{run.FINAL_LOCK_PATH} exists: a final run loaded the test sessions at" in err
+    assert f"its results are in {run.METRICS_PATH}" in err and "--force scores them again" in err
+    assert ready["test_loads"] == 1
+    assert run.METRICS_PATH.read_text() == written and run.EXPERIMENTS_PATH.read_text() == logged
+
+
+def test_force_scores_the_test_sessions_again_and_logs_it_in_experiments(ready, monkeypatch):
+    run.main(["final", "--force", "--note", "not logged"])   # nothing to force yet: an ordinary run
+    first = json.loads(run.FINAL_LOCK_PATH.read_text())["started"]
+    rows = run.EXPERIMENTS_PATH.read_text().splitlines()
+    assert json.loads(run.METRICS_PATH.read_text())["forced"] is False and "not logged" not in rows[-1]
+
+    run.main(["final", "--force", "--note", "fixed a | bug"])
+    assert ready["test_loads"] == 2
+    assert json.loads(run.METRICS_PATH.read_text())["forced"] is True
+    assert json.loads(run.FINAL_LOCK_PATH.read_text())["forced"] is True
+    after = run.EXPERIMENTS_PATH.read_text().splitlines()
+    assert after[:-1] == rows
+    date, run_id, method, horizon, *rest, note = cells(after[-1])
+    assert (run_id, method, horizon, rest) == ("`final`", "every method", "0.5", ["—"] * 5)
+    assert note == (f"final run forced: the test sessions scored again (last loaded at {first}), results in "
+                    r"metrics.json; fixed a \| bug")
+
+
+def test_metrics_json_blocks_an_unforced_final_run_with_its_lock_deleted(ready, monkeypatch, capsys):
+    run.main(["final"])
+    first = json.loads(run.METRICS_PATH.read_text())["started"]
+    written, logged = run.METRICS_PATH.read_text(), run.EXPERIMENTS_PATH.read_text()
+    run.FINAL_LOCK_PATH.unlink()   # taken for a stale lockfile
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit):
+        run.main(["final"])
+    err = capsys.readouterr().err
+    assert f"{run.METRICS_PATH} exists, though final.lock doesn't: a final run loaded the test sessions at {first}" in err
+    assert "--force scores them again" in err
+    assert ready["test_loads"] == 1 and not run.FINAL_LOCK_PATH.exists()
+    assert run.METRICS_PATH.read_text() == written and run.EXPERIMENTS_PATH.read_text() == logged
+
+    # Forced, it runs as any forced run does: logged, with when the results were from.
+    run.main(["final", "--force"])
+    assert ready["test_loads"] == 2
+    assert json.loads(run.METRICS_PATH.read_text())["forced"] is True
+    assert json.loads(run.FINAL_LOCK_PATH.read_text())["forced"] is True
+    assert f"(last loaded at {first})" in run.EXPERIMENTS_PATH.read_text().splitlines()[-1]
+
+
+def test_write_json_writes_nan_as_null_and_numpy_scalars_as_python_ones(tmp_path):
+    path = tmp_path / "results" / "out.json"
+    run.write_json({"a": float("nan"), "b": [np.float64("nan"), np.float32(0.5), np.int64(3)], "c": (np.bool_(True),),
+                    "θ1": 25}, path)
+    text = path.read_text()
+    assert "NaN" not in text and "θ1" in text
+
+    def strict(constant):
+        raise ValueError(f"{constant} isn't strict JSON")
+
+    assert json.loads(text, parse_constant=strict) == {"a": None, "b": [None, 0.5, 3], "c": [True], "θ1": 25}
+
+
+def test_a_final_run_that_stops_partway_keeps_its_lock(ready, monkeypatch, capsys):
+
+    def broken(model, test):
+        raise RuntimeError("a bug after the test sessions loaded")
+
+    monkeypatch.setattr(run, "importance", broken)
+    with pytest.raises(RuntimeError, match="a bug after"):
+        run.main(["final"])
+    assert ready["test_loads"] == 1 and run.FINAL_LOCK_PATH.exists() and not run.METRICS_PATH.exists()
+
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        run.main(["final"])
+    assert "it never wrote metrics.json, so it stopped partway" in capsys.readouterr().err
+    assert ready["test_loads"] == 1
+
+
+def edit_chosen(change):
+    """A change to the repo's chosen.json, written back."""
+    def apply(sessions):
+        chosen = json.loads(run.CHOSEN_PATH.read_text())
+        change(chosen)
+        run.CHOSEN_PATH.write_text(json.dumps(chosen))
+    return apply
+
+
+def edit_run(method, change):
+    """A change to method's chosen CV run file, written back."""
+    def apply(sessions):
+        path = run.CV_DIR / f"{json.loads(run.CHOSEN_PATH.read_text())[method]['run_id']}.parquet"
+        oof = pd.read_parquet(path)
+        change(oof)
+        oof.to_parquet(path)
+    return apply
+
+
+def drop_run(method):
+    def apply(sessions):
+        (run.CV_DIR / f"{json.loads(run.CHOSEN_PATH.read_text())[method]['run_id']}.parquet").unlink()
+    return apply
+
+
+def copy_in(sessions):
+    sessions["all"].append("i")
+    sessions["dev"].append("i")
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda sessions: run.CHOSEN_PATH.unlink(),
+     "chosen.json: run `python -m spinwarn.run tune --method <method>` for every method (b1, b2, b3, lr, rf, hgb) first"),
+    (edit_chosen(lambda chosen: chosen.pop("hgb")), "chosen.json has no run for hgb"),
+    (drop_run("rf"), "rf's chosen run. results/cv/ isn't in git, but tune is seeded: tune it again with "
+                     "`python -m spinwarn.run tune --method rf`"),
+    (edit_chosen(lambda chosen: chosen["lr"].update(params={"C": 12345})), """not lr with chosen.json's {"C": 12345}"""),
+    (edit_run("b3", lambda oof: oof.attrs.update(sessions=["a", "b"])), "b3's chosen run scored other sessions"),
+    (edit_run("b1", lambda oof: oof.attrs["built_with"].update(GAP_S=0.2)), "b1's chosen run was built with other"),
+    (edit_run("hgb", lambda oof: oof.__setitem__("target", ~oof["target"])), "hgb's chosen run scored other rows"),
+    (copy_in, "the dataset was built from other sessions"),
+])
+def test_final_refuses_before_it_loads_the_test_sessions(ready, monkeypatch, capsys, change, message):
+    change(ready)
+    capsys.readouterr()
+    with pytest.raises(SystemExit):
+        run.main(["final"])
+    assert message in capsys.readouterr().err
+    assert ready["test_loads"] == 0 and not run.FINAL_LOCK_PATH.exists() and not run.METRICS_PATH.exists()
+
+
+def test_final_at_another_horizon_reads_its_own_chosen_runs_and_writes_its_own_files(sessions, monkeypatch, capsys):
+    final_ready(sessions, monkeypatch, "--horizon", "1")
+    capsys.readouterr()
+    run.main(["final", "--horizon", "1"])
+    out = capsys.readouterr().out
+
+    assert (run.metrics_path(1.0).name, run.lock_path(1.0).name) == ("metrics_h1.json", "final_h1.lock")
+    assert run.lock_path(1.0).exists() and not run.FINAL_LOCK_PATH.exists() and not run.METRICS_PATH.exists()
+    metrics = json.loads(run.metrics_path(1.0).read_text())
+    assert metrics["horizon"] == 1.0 and metrics["built_with"] == run.built_with(1.0)
+    chosen = json.loads(run.chosen_path(1.0).read_text())
+    assert all(metrics["methods"][m]["run_id"] == chosen[m]["run_id"] for m in cv.METHODS)
+    # The test sessions labelled at 1.0 s: 60 target frames before each spin.
+    assert "60 positive frames" in out and "labelled at horizon 1 s" in out
+
+    # Each horizon has its own lock: the 0.5 s run isn't refused by 1.0's, only by its missing chosen runs.
+    with pytest.raises(SystemExit):
+        run.main(["final"])
+    assert f"no {run.CHOSEN_PATH}: run" in capsys.readouterr().err and sessions["test_loads"] == 1
+
+
+def test_final_at_a_horizon_nothing_was_tuned_at_says_to_tune_every_method_there(sessions, capsys):
+    cv_ready(sessions)
+    with pytest.raises(SystemExit):
+        run.main(["final", "--horizon", "1"])
+    assert (f"no {run.chosen_path(1.0)}: run `python -m spinwarn.run tune --method <method> --horizon 1` for every "
+            "method (b1, b2, b3, lr, rf, hgb) first") in capsys.readouterr().err
+    assert sessions["test_loads"] == 0 and not run.lock_path(1.0).exists()
+
+
+def test_each_kind_is_scored_on_its_own_sessions_and_a_kind_without_spins_has_no_interval(monkeypatch):
+    monkeypatch.setattr(run, "MIN_KIND_SPINS", 1)
+    test = pd.concat([run.session_rows("f", session(ramp=True)), run.session_rows("g", session(spin_at=None, seed=1))],
+                     ignore_index=True)
+    # B1 at 20° alarms only on f's climb, from 4.0 s plus a frame.
+    point = run.operating_point(test, test["abs_slip"].to_numpy(), 20.0, {"f": "natural", "g": "deliberate"})
+
+    assert (point["n_spins"], point["caught_min_lead"], point["false_alarms"]) == (1, 1, 0)
+    assert point["spins"] == [{"session": "f", "t": 5.0, "caught": True, "caught_min_lead": True,
+                               "lead": pytest.approx(59 / 60), "kind": "natural"}]
+    natural, deliberate = point["by_kind"]["natural"], point["by_kind"]["deliberate"]
+    assert natural["n_spins"] == 1 and natural["enough"] and natural["recall_min_lead_ci"] == [1.0, 1.0]
+    assert (deliberate["n_spins"], deliberate["alerts"], deliberate["enough"]) == (0, 0, False)
+    assert np.isnan(deliberate["recall_ci"]).all() and np.isnan(deliberate["recall_min_lead_ci"]).all()
+    assert deliberate["minutes"] == pytest.approx(evaluate.summarize(test[test["session"] == "g"], test.loc[
+        test["session"] == "g", "abs_slip"], 20.0)["minutes"])
+
+
+class Timed:
+    """A model with n_jobs, as rf has: it keeps each row it scores, and the n_jobs it scored it at."""
+
+    def __init__(self):
+        self.n_jobs, self.calls = -1, []
+
+    def get_params(self):
+        return {"n_jobs": self.n_jobs}
+
+    def set_params(self, **params):
+        self.n_jobs = params["n_jobs"]
+        return self
+
+    def predict_proba(self, X):
+        self.calls.append((X, self.n_jobs))
+        return np.array([[0.5, 0.5]])
+
+
+def test_a_model_is_timed_on_one_row_arrays_of_scored_frames_and_on_one_core_too(monkeypatch):
+    monkeypatch.setattr(run, "N_TIMING", 7)
+    test = run.session_rows("f", session())
+    model = Timed()
+    timing = run.time_per_prediction("rf", {}, model, test)
+
+    assert set(timing) == {"ms", "ms_n_jobs_1"} and all(ms >= 0 for ms in timing.values())
+    assert [n_jobs for _X, n_jobs in model.calls] == [-1] * 7 + [1] * 7 and model.n_jobs == -1
+    scored = {tuple(row) for row in test.loc[~test["excluded"], FEATURES].to_numpy()}
+    for X, _n_jobs in model.calls:
+        assert isinstance(X, np.ndarray) and X.shape == (1, len(FEATURES)) and tuple(X[0]) in scored
+    # The same frames on one core as on all of them, picked with the seed.
+    assert [X.tolist() for X, _ in model.calls[:7]] == [X.tolist() for X, _ in model.calls[7:]]
+
+
+def test_a_baseline_is_timed_on_one_row_slices_of_its_signals(monkeypatch):
+    monkeypatch.setattr(run, "N_TIMING", 7)
+    calls = []
+    monkeypatch.setitem(baselines.BASELINES, "b2", lambda rows, theta1: calls.append((list(rows.columns), len(rows),
+                                                                                     theta1)))
+    timing = run.time_per_prediction("b2", {"theta1": 10}, None, run.session_rows("f", session()))
+    assert set(timing) == {"ms"} and calls == [(["abs_slip", "abs_slip_rate"], 1, 10)] * 7

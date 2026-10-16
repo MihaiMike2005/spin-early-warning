@@ -1,6 +1,6 @@
 # Experiments
 
-One row per run, appended by `python -m spinwarn.run cv` and `tune` (whose rows say "tune" in the note). Run names the file in `results/cv/` (gitignored) that holds the run's out-of-fold scores, folds and metrics. The headline is recall at 1 FA/min counting only catches with at least 0.5 s of lead; the column after it is the Project Plan's rule, any catch (0.1 s or more ahead).
+One row per run, appended by `python -m spinwarn.run cv` and `tune` (whose rows say "tune" in the note). A `final` run forced with `--force` gets a row too, Run `final`, so scoring the test sessions again stays visible. Run names the file in `results/cv/` (gitignored) that holds the run's out-of-fold scores, folds and metrics. The headline is recall at 1 FA/min counting only catches with at least 0.5 s of lead; the column after it is the Project Plan's rule, any catch (0.1 s or more ahead).
 
 | Date | Run | Method | Horizon (s) | Features | Params | PR-AUC | Recall @ 1 FA/min, lead ≥ 0.5 s | Recall @ 1 FA/min | Note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
