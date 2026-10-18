@@ -238,8 +238,8 @@ Gradient boosting, the models' best CV PR-AUC, on the scored test frames: how fa
   spins.
 - **The natural test session has exactly 10 spins,** so one natural spin is
   10 points of recall.
-- **`2026-10-11_202102` isn't fully unseen.** Step 9 of the Build Plan (in
-  `docs/`) weighed the features partly by their correlation with the target
+- **`2026-10-11_202102` isn't fully unseen.** Feature selection
+  weighed the features partly by their correlation with the target
   on all three Oct 11 sessions, `202102` among them, before it was locked as
   a test session. Oct 14's natural sessions had too few spins to test on (1
   and 4), so the natural test session had to come from Oct 11.
@@ -509,7 +509,6 @@ git checkout -- README.md experiments.md results/
 
 | Path | What it is |
 | --- | --- |
-| `docs/` | The Project Plan and the Build Plan |
 | `data/raw/` | Logger CSV + JSON per session (gitignored) |
 | `data/processed/` | Sessions on the 60 Hz grid with derived signals, and the datasets (gitignored) |
 | `data/sample/` | One short recording, committed: `2026-10-11_191720`, the logger's 3-minute live check on Brooklyn Park, not in the dataset |
